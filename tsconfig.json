@@ -1,0 +1,30 @@
+{
+  "compilerOptions": {
+    /* Language and Environment */
+    "target": "ES2024",
+
+    /* Modules */
+    "module": "commonjs",
+    "rootDir": "./src",
+    "resolveJsonModule": true,
+
+    /* Emit */
+    "outDir": "./dist",
+
+    /* Interop Constraints */
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+
+    /* Type Checking */
+    "strict": true,
+
+    /* Completeness */
+    "skipLibCheck": true
+  },
+  "ts-node": {
+    "transpileOnly": true,
+    "ignore": [
+      "/node_modules/(?!@api)"
+    ]
+  }
+}
