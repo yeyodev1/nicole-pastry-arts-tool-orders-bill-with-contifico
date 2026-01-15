@@ -28,6 +28,8 @@ export interface IOrder extends Document {
     email: string;
     address: string;
   };
+  invoiceStatus?: "PENDING" | "PROCESSED" | "ERROR";
+  invoiceInfo?: any; // To store the result from Contífico
   createdAt: Date;
   updatedAt: Date;
 }
@@ -56,6 +58,13 @@ const OrderSchema = new Schema<IOrder>(
     deliveryValue: { type: Number, default: 0 },
     paymentMethod: { type: String, required: true },
     invoiceNeeded: { type: Boolean, default: false },
+    invoiceStatus: {
+      type: String,
+      enum: ["PENDING", "PROCESSED", "ERROR"],
+      default: function () {
+        return this.invoiceNeeded ? "PENDING" : undefined;
+      }
+    },
     responsible: {
       type: String,
       enum: ["Hillary", "E", "Ivin"],
