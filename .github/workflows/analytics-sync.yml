@@ -1,0 +1,59 @@
+name: Analytics Sync (ETL)
+
+on:
+  schedule:
+    # Run at 06:00 UTC (01:00 AM Ecuador) every day
+    # Effectively syncs "Yesterday's" data to close the books.
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Sync Mode'
+        required: true
+        default: 'DAILY'
+        type: choice
+        options:
+        - DAILY
+        - LAST_30_DAYS
+
+jobs:
+  sync-analytics:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Execute Analytics Sync
+        run: |
+          if [ "${{ github.event.inputs.mode }}" == "LAST_30_DAYS" ]; then
+            echo "🔄 Starting Full 30-Day Backfill (Day by Day Loop)..."
+            echo "This prevents timeouts by syncing one day at a time."
+            
+            # Loop 30 days back to 1 day ago
+            for i in {30..1}; do
+               # Calculate date (dd/mm/yyyy)
+               DATE=$(date -d "$i days ago" +%d/%m/%Y)
+               echo "--------------------------------"
+               echo "📆 Processing Date: $DATE"
+               
+               # Sync single day
+               RESPONSE=$(curl -s -X POST "${{ secrets.API_BASE_URL }}/api/analytics/sync" \
+                 -H "Content-Type: application/json" \
+                 -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+                 -H "ngrok-skip-browser-warning: true" \
+                 -d "{\"from\": \"$DATE\", \"to\": \"$DATE\"}")
+               
+               echo "Response: $RESPONSE"
+               
+               # Polite delay
+               sleep 2
+            done
+            echo "✅ Backfill Completed."
+          else
+            echo "🔄 Running Standard Daily Sync (Yesterday)..."
+            
+            # No body = Defaults to Yesterday in logic
+            curl -s -X POST "${{ secrets.API_BASE_URL }}/api/analytics/sync" \
+              -H "Content-Type: application/json" \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              -H "ngrok-skip-browser-warning: true"
+              
+            echo "✅ Daily Sync Completed."
+          fi
