@@ -1,4 +1,5 @@
-import axios from "axios";
+import axios, { HttpStatusCode } from "axios";
+import { IPerson } from "../interfaces/person.interface";
 
 export class ContificoService {
   private apiKey: string;
@@ -147,6 +148,87 @@ export class ContificoService {
     } catch (error: any) {
       console.error("❌ Error fetching products from Contífico:", error.response?.data || error.message);
       throw new Error("Failed to fetch products from Contífico");
+    }
+  }
+
+  /**
+   * Get person from Contífico (Search by ID or Name)
+   * @param query Search query (RUC, Cedula, or Name)
+   */
+  async getPerson(query: string) {
+    try {
+      console.log("🔍 Fetching person from Contífico with query:", query);
+
+      const params: any = {};
+
+      // Basic heuristic: if it contains only numbers, search by identificacion
+      // otherwise search by filtro (name/razon social)
+      const isNumeric = /^\d+$/.test(query);
+
+      if (isNumeric) {
+        params.identificacion = query;
+      } else {
+        params.filtro = query;
+      }
+
+      const response = await axios.get(`${this.baseUrl}/persona/`, {
+        headers: {
+          Authorization: this.apiKey,
+        },
+        params: params,
+      });
+
+      return response.data;
+    } catch (error: any) {
+      console.error("❌ Error fetching person from Contífico:", error.response?.data || error.message);
+      // Don't throw unique error, just return empty list or propagate error safely
+      if (error.response?.status === 404) {
+        return [];
+      }
+      throw new Error("Failed to fetch person from Contífico");
+    }
+  }
+
+  /**
+   * Create a new person in Contífico
+   * @param personData Person data (ruc, razon_social, email, etc.)
+   */
+  async createPerson(personData: IPerson): Promise<IPerson> {
+    try {
+      console.log("📝 Creating person in Contífico:", personData);
+
+      // If tipo is not provided, infer from length
+      const tipo = personData.tipo || (personData.ruc.length === 13 ? "J" : "N");
+
+      const payload: IPerson = {
+        ...personData,
+        tipo: tipo,
+        es_cliente: true,
+        es_proveedor: false,
+        es_empleado: false,
+        es_vendedor: false,
+        es_extranjero: false
+      };
+
+      // Identify cedula vs ruc logic
+      if (tipo === "N") {
+        payload.cedula = personData.ruc; // Map our 'ruc' input to 'cedula' field for API
+        payload.ruc = ""; // Clear RUC to avoid API conflicts if strictly N
+      } else {
+        payload.ruc = personData.ruc;
+        payload.cedula = "";
+      }
+
+      const response = await axios.post(`${this.baseUrl}/persona/`, payload, {
+        headers: {
+          Authorization: this.apiKey,
+        },
+      });
+
+      return response.data;
+    } catch (error: any) {
+      console.error("❌ Error creating person in Contífico:", error.response?.data || error.message);
+      throw new Error("Failed to create person in Contífico: " + (error.response?.data?.mensaje || error.message));
     }
   }
 }
