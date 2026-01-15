@@ -12,9 +12,30 @@ jobs:
   process-invoices:
     runs-on: ubuntu-latest
     steps:
-      - name: Trigger Batch Invoice Endpoint
+      - name: Trigger Batch Invoice Endpoint Loop
         run: |
-          curl -X POST "${{ secrets.API_BASE_URL }}/api/orders/batch-invoice" \
-          -H "Content-Type: application/json" \
-          -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
-          -H "ngrok-skip-browser-warning: true"
+          echo "Starting Batch Invoice Loop..."
+          REMAINING=1
+          
+          while [ "$REMAINING" -gt 0 ]; do
+            echo "Calling batch endpoint..."
+            RESPONSE=$(curl -s -X POST "${{ secrets.API_BASE_URL }}/api/orders/batch-invoice" \
+              -H "Content-Type: application/json" \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              -H "ngrok-skip-browser-warning: true")
+            
+            echo "Response: $RESPONSE"
+            
+            # Extract remaining count using grep/sed (avoiding jq dependency if not present, though ubuntu has it usually)
+            # Assuming JSON format {"remaining": 5, ...}
+            REMAINING=$(echo $RESPONSE | jq '.remaining // 0')
+            
+            echo "Remaining pending invoices: $REMAINING"
+            
+            if [ "$REMAINING" -gt 0 ]; then
+               echo "Waiting 5 seconds before next batch..."
+               sleep 5
+            fi
+          done
+          
+          echo "All batches processed successfully."
