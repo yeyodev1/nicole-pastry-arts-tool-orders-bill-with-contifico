@@ -1,4 +1,5 @@
 import type { Request, Response, NextFunction } from "express";
+import { HttpStatusCode } from "axios";
 import { models } from "../models";
 import { ContificoService } from "../services/contifico.service";
 
@@ -69,18 +70,27 @@ export async function processPendingInvoices(req: Request, res: Response, next: 
     console.log("⏰ Starting batch invoice processing...");
 
     // Find all orders with invoiceNeeded: true AND invoiceStatus: 'PENDING'
-    const pendingOrders = await models.orders.find({
+    // BATCH LIMIT: Process 5 at a time to avoid Vercel Timeouts (10s limit on free tier)
+    const BATCH_SIZE = 5;
+
+    // Check total pending count first
+    const totalPending = await models.orders.countDocuments({
       invoiceNeeded: true,
       invoiceStatus: "PENDING"
     });
 
-    if (pendingOrders.length === 0) {
+    if (totalPending === 0) {
       console.log("✅ No pending invoices to process.");
-      res.status(200).send({ message: "No pending invoices found." });
+      res.status(200).send({ message: "No pending invoices found.", remaining: 0 });
       return;
     }
 
-    console.log(`📦 Found ${pendingOrders.length} pending invoices.`);
+    const pendingOrders = await models.orders.find({
+      invoiceNeeded: true,
+      invoiceStatus: "PENDING"
+    }).limit(BATCH_SIZE);
+
+    console.log(`📦 Processing batch of ${pendingOrders.length} invoices. (${totalPending} total pending)`);
 
     const results = {
       processed: 0,
@@ -122,9 +132,14 @@ export async function processPendingInvoices(req: Request, res: Response, next: 
       }
     }
 
+    // Calculate remaining (approximate)
+    const remaining = Math.max(0, totalPending - pendingOrders.length);
+
     res.status(200).send({
-      message: "Batch processing completed.",
-      results
+      message: `Batch processed. ${remaining} pending invoices remaining.`,
+      results,
+      remaining,
+      totalPending
     });
     return;
 
@@ -132,6 +147,58 @@ export async function processPendingInvoices(req: Request, res: Response, next: 
     console.error("❌ Error in processPendingInvoices:", error);
     res.status(500).send({
       message: "Internal server error during batch processing.",
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return;
+  }
+}
+
+/**
+ * Update invoice data for an existing order
+ * Allowed only if invoiceStatus is 'PENDING'
+ */
+export async function updateInvoiceData(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { id } = req.params;
+    const { invoiceNeeded, invoiceData } = req.body;
+
+    const order = await models.orders.findById(id);
+
+    if (!order) {
+      res.status(HttpStatusCode.NotFound).send({ message: "Order not found." });
+      return;
+    }
+
+    // Block edits if already processed
+    if (order.invoiceStatus === "PROCESSED") {
+      res.status(HttpStatusCode.BadRequest).send({
+        message: "Cannot edit invoice data. Invoice has already been processed with Contífico."
+      });
+      return;
+    }
+
+    // Update fields
+    if (invoiceNeeded !== undefined) order.invoiceNeeded = invoiceNeeded;
+    if (invoiceData) order.invoiceData = invoiceData;
+
+    // Reset status to PENDING if it was ERROR, so it gets picked up again
+    if (order.invoiceNeeded) {
+      order.invoiceStatus = "PENDING";
+    } else {
+      order.invoiceStatus = undefined; // Clear status if no longer needed
+    }
+
+    await order.save();
+
+    res.status(HttpStatusCode.Ok).send({
+      message: "Order invoice data updated successfully.",
+      order
+    });
+    return;
+  } catch (error) {
+    console.error("❌ Error in updateInvoiceData:", error);
+    res.status(HttpStatusCode.InternalServerError).send({
+      message: "Internal server error while updating order.",
       error: error instanceof Error ? error.message : String(error)
     });
     return;
