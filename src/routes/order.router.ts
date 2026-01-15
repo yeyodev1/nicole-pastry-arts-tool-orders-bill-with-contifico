@@ -9,4 +9,7 @@ router.post("/", OrderController.createOrder);
 // POST /api/orders/batch-invoice (Protected by Cron)
 router.post("/batch-invoice", OrderController.processPendingInvoices);
 
+// PUT /api/orders/:id/invoice
+router.put("/:id/invoice", OrderController.updateInvoiceData);
+
 export default router;
