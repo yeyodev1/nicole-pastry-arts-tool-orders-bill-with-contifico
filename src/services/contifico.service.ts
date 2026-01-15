@@ -231,4 +231,32 @@ export class ContificoService {
       throw new Error("Failed to create person in Contífico: " + (error.response?.data?.mensaje || error.message));
     }
   }
+
+  /**
+   * Get documents (movements) from Contífico
+   * @param options Search filters (fecha_emision, tipo, persona_id, etc.)
+   */
+  async getDocuments(options: { fecha_emision?: string; tipo?: string; persona_identificacion?: string;[key: string]: any } = {}) {
+    try {
+      console.log("🔍 Fetching documents from Contífico with options:", options);
+
+      const params = { ...options };
+
+      const response = await axios.get(`${this.baseUrl}/documento/`, {
+        headers: {
+          Authorization: this.apiKey,
+        },
+        params: params,
+      });
+
+      return response.data;
+    } catch (error: any) {
+      console.error("❌ Error fetching documents from Contífico:", error.response?.data || error.message);
+      // Handle 404 as empty list if Contífico returns 404 for no results
+      if (error.response?.status === 404) {
+        return [];
+      }
+      throw new Error("Failed to fetch documents from Contífico");
+    }
+  }
 }
