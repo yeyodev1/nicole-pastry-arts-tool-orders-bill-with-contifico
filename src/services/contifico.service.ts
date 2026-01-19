@@ -42,12 +42,12 @@ export class ContificoService {
         let iva_line = 0;
 
         if (porcentaje_iva > 0) {
-          base_gravable = totalLine;
-          iva_line = Number((base_gravable * (porcentaje_iva / 100)).toFixed(2));
+          base_gravable = Number(totalLine.toFixed(2)); // Round Base to 2 decimals
+          iva_line = Number((base_gravable * (porcentaje_iva / 100)).toFixed(2)); // Calc IVA from rounded base
           subtotal_15 += base_gravable;
           total_iva += iva_line;
         } else {
-          base_cero = totalLine;
+          base_cero = Number(totalLine.toFixed(2)); // Round Base 0 to 2 decimals
           subtotal_0 += base_cero;
         }
 
