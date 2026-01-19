@@ -187,7 +187,10 @@ export async function processPendingInvoices(req: Request, res: Response, next: 
 
         // 3. Update Order
         if (invoiceResponse.error) {
-          throw new Error(invoiceResponse.error);
+          const errorMsg = typeof invoiceResponse.error === 'object'
+            ? JSON.stringify(invoiceResponse.error)
+            : String(invoiceResponse.error);
+          throw new Error(errorMsg);
         }
 
         order.invoiceStatus = "PROCESSED";
