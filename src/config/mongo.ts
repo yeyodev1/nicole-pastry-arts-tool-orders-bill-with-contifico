@@ -12,7 +12,6 @@ async function dbConnect(): Promise<void> {
     console.log("*** SUCCESSFULLY CONNECTED TO DATABASE FUDMASTER FRIENDDD  ***");
   } catch (error) {
     console.log("*** CONECTION FAILED ***", error);
-    throw error; // Fail fast: do not let the app start without DB
   }
 }
 

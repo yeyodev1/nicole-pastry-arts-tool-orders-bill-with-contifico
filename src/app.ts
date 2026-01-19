@@ -20,17 +20,7 @@ export default function createApp() {
   ];
 
   const corsOptions = {
-    origin: function (origin: any, callback: any) {
-      const normalizedOrigin = origin?.replace(/\/$/, "");
-      console.log("🟡 Origin recibido:", origin);
-
-      if (!origin || whitelist.includes(normalizedOrigin)) {
-        callback(null, true);
-      } else {
-        console.log(`❌ CORS bloqueado para: ${origin}`);
-        callback(new Error("Not allowed by CORS"));
-      }
-    },
+    origin: true, // Allow all origins (reflects request origin)
     credentials: true,
   };
 
@@ -44,7 +34,7 @@ export default function createApp() {
   app.use(express.json({ limit: "50mb" }));
 
   app.get("/", (_req, res: Response) => {
-    res.send("factura y ordenes de nicole backend IS ALIVEEEEEEE:)");
+    res.send("factura y ordenes de nicole backend IS ALIVEEEEEEE debbbugeando:)");
   });
 
   routerApi(app);
