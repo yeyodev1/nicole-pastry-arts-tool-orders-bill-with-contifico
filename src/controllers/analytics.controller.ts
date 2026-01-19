@@ -156,3 +156,61 @@ export async function syncAnalytics(req: Request, res: Response, next: NextFunct
     return;
   }
 }
+
+/**
+ * Get sales aggregated by responsible person
+ * Query params: from (YYYY-MM-DD), to (YYYY-MM-DD)
+ */
+export async function getSalesByResponsible(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { from, to } = req.query;
+
+    let startDate = new Date();
+    startDate.setDate(1); // Default: Start of current month
+    let endDate = new Date(); // Default: Now
+
+    if (from) startDate = new Date(from as string);
+    if (to) endDate = new Date(to as string);
+
+    // Normalize
+    startDate.setHours(0, 0, 0, 0);
+    endDate.setHours(23, 59, 59, 999);
+
+    console.log(`📊 Fetching sales by responsible from ${startDate.toISOString()} to ${endDate.toISOString()}`);
+
+    const stats = await models.orders.aggregate([
+      {
+        $match: {
+          createdAt: { $gte: startDate, $lte: endDate }
+        }
+      },
+      {
+        $group: {
+          _id: "$responsible",
+          totalSales: { $sum: "$totalValue" },
+          count: { $sum: 1 }
+        }
+      },
+      {
+        $sort: { totalSales: -1 }
+      }
+    ]);
+
+    res.status(HttpStatusCode.Ok).send({
+      message: "Sales by responsible retrieved successfully.",
+      range: {
+        from: startDate.toLocaleDateString(),
+        to: endDate.toLocaleDateString()
+      },
+      stats
+    });
+    return;
+  } catch (error) {
+    console.error("❌ Error in getSalesByResponsible:", error);
+    res.status(HttpStatusCode.InternalServerError).send({
+      message: "Error fetching sales stats.",
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return;
+  }
+}

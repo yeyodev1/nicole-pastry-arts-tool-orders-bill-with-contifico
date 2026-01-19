@@ -19,7 +19,7 @@ export interface IOrder extends Document {
   deliveryValue: number;
   paymentMethod: string;
   invoiceNeeded: boolean;
-  responsible: "Hillary" | "E" | "Ivin";
+  responsible: "Hillary" | "E" | "Ivin" | "Web";
   comments?: string;
   // Invoice data (optional if invoiceNeeded is false)
   invoiceData?: {
@@ -67,7 +67,7 @@ const OrderSchema = new Schema<IOrder>(
     },
     responsible: {
       type: String,
-      enum: ["Hillary", "E", "Ivin"],
+      enum: ["Hillary", "E", "Ivin", "Web"],
       required: true,
     },
     comments: { type: String },

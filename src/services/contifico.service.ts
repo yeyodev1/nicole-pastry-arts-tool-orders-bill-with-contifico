@@ -127,13 +127,15 @@ export class ContificoService {
    * Get products from Contífico
    * @param options Search options (filtro, codigo_barra, categoria_id)
    */
-  async getProducts(options: { filtro?: string; codigo_barra?: string; categoria_id?: string } = {}) {
+  async getProducts(options: { filtro?: string; codigo_barra?: string; categoria_id?: string; result_size?: number; result_page?: number } = {}) {
     try {
       const params: any = {};
 
       if (options.filtro) params.filtro = options.filtro;
       if (options.codigo_barra) params.codigo_barra = options.codigo_barra;
       if (options.categoria_id) params.categoria_id = options.categoria_id;
+      if (options.result_size) params.result_size = options.result_size;
+      if (options.result_page) params.result_page = options.result_page;
 
       console.log("🔍 Fetching products from Contífico with params:", params);
 

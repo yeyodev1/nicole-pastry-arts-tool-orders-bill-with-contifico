@@ -9,4 +9,7 @@ router.get("/dashboard", AnalyticsController.getDashboardStats);
 // POST /api/analytics/sync (Slow, fetches from external API)
 router.post("/sync", AnalyticsController.syncAnalytics);
 
+// GET /api/analytics/sales-by-responsible
+router.get("/sales-by-responsible", AnalyticsController.getSalesByResponsible);
+
 export default router;

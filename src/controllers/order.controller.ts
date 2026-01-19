@@ -9,12 +9,45 @@ export async function createOrder(req: Request, res: Response, next: NextFunctio
   try {
     const orderData = req.body;
 
-    // 1. Basic Validation (Simplified for testing)
+    // 1. Basic Validation & Defaults
     if (!orderData.customerName || !orderData.products || orderData.products.length === 0) {
       res.status(400).send({
         message: "Customer name and products are required.",
       });
       return;
+    }
+
+    // Default: Set orderDate to now if missing
+    if (!orderData.orderDate) {
+      orderData.orderDate = new Date();
+    }
+
+    // Default: Sales Channel
+    if (!orderData.salesChannel) {
+      orderData.salesChannel = "Web";
+    }
+
+    // Default: Responsible
+    if (!orderData.responsible) {
+      orderData.responsible = "Web";
+    }
+
+    // Default: Payment Method
+    if (!orderData.paymentMethod) {
+      orderData.paymentMethod = "Por confirmar";
+    }
+
+    // Map deliveryType: 'pickup' -> 'retiro'
+    if (orderData.deliveryType === "pickup") {
+      orderData.deliveryType = "retiro";
+    }
+
+    // Calculate totalValue if missing
+    if (orderData.totalValue === undefined || orderData.totalValue === null) {
+      const calculatedTotal = orderData.products.reduce((sum: number, p: any) => {
+        return sum + (Number(p.price) * Number(p.quantity));
+      }, 0);
+      orderData.totalValue = calculatedTotal;
     }
 
     // 2. Save Order to Database
@@ -55,6 +88,49 @@ Ubicación: ${orderData.deliveryType === "delivery" ? "See comments for address"
     console.error("❌ Error in createOrder:", error);
     res.status(500).send({
       message: "Internal server error occurred while creating order.",
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return;
+  }
+}
+
+/**
+ * Get all orders
+ */
+export async function getOrders(req: Request, res: Response, next: NextFunction) {
+  try {
+    const orders = await models.orders.find().sort({ createdAt: -1 }).limit(100);
+    res.status(200).send(orders);
+    return;
+  } catch (error) {
+    console.error("❌ Error in getOrders:", error);
+    res.status(500).send({
+      message: "Internal server error while fetching orders.",
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return;
+  }
+}
+
+/**
+ * Get single order by ID
+ */
+export async function getOrderById(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { id } = req.params;
+    const order = await models.orders.findById(id);
+
+    if (!order) {
+      res.status(404).send({ message: "Order not found" });
+      return;
+    }
+
+    res.status(200).send(order);
+    return;
+  } catch (error) {
+    console.error("❌ Error in getOrderById:", error);
+    res.status(500).send({
+      message: "Internal server error while fetching order.",
       error: error instanceof Error ? error.message : String(error)
     });
     return;
