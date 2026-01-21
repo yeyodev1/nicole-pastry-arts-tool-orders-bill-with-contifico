@@ -3,6 +3,7 @@ dotenv.config();
 import createApp from "./app";
 import dbConnect from "./config/mongo";
 import { models } from "./models";
+import { UserService } from "./services/user.service";
 
 async function main() {
   await dbConnect();
