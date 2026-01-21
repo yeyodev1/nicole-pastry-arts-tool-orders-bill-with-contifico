@@ -5,68 +5,55 @@ import { ProductionService } from "../services/production.service";
 
 const productionService = new ProductionService();
 
-/**
- * Get all production tasks (To-Do List)
- * Syncs with Contífico first to ensure data is up to date (Yesterday -> Future).
- */
 export async function getProductionTasks(req: Request, res: Response) {
   try {
     const tasks = await productionService.getProductionTasks();
-
     res.status(HttpStatusCode.Ok).send({
       message: "Production tasks retrieved successfully.",
       count: tasks.length,
       data: tasks
     });
   } catch (error: any) {
-    console.error("❌ Error retrieving production tasks:", error);
-    res.status(HttpStatusCode.InternalServerError).send({
-      message: "Failed to retrieve production tasks.",
-      error: error.message
-    });
+    res.status(HttpStatusCode.InternalServerError).send({ message: "Failed", error: error.message });
   }
 }
 
-/**
- * Update a production task (Stage or Notes)
- */
 export async function updateProductionTask(req: Request, res: Response) {
   try {
     const { id } = req.params;
     const { stage, notes } = req.body;
-
-    if (!stage && notes === undefined) {
-      res.status(HttpStatusCode.BadRequest).send({
-        message: "At least one field (stage or notes) is required to update."
-      });
-      return;
-    }
-
-    if (stage && !["PENDING", "IN_PROCESS", "FINISHED"].includes(stage)) {
-      res.status(HttpStatusCode.BadRequest).send({
-        message: "Invalid stage value."
-      });
-      return;
-    }
-
     const updatedTask = await productionService.updateTask(id, { stage, notes });
-
     if (!updatedTask) {
-      res.status(HttpStatusCode.NotFound).send({
-        message: "Production task not found."
-      });
+      res.status(HttpStatusCode.NotFound).send({ message: "Not found" });
+      return;
+    }
+    res.status(HttpStatusCode.Ok).send({ message: "Updated", data: updatedTask });
+  } catch (error: any) {
+    res.status(HttpStatusCode.InternalServerError).send({ message: "Failed", error: error.message });
+  }
+}
+
+export async function batchUpdateProductionTasks(req: Request, res: Response) {
+  try {
+    const { ids, stage } = req.body; // ids: string[], stage: string
+    if (!ids || !Array.isArray(ids) || ids.length === 0 || !stage) {
+      res.status(HttpStatusCode.BadRequest).send({ message: "Invalid batch update request." });
       return;
     }
 
-    res.status(HttpStatusCode.Ok).send({
-      message: "Production task updated successfully.",
-      data: updatedTask
-    });
+    await productionService.batchUpdateTasks(ids, { stage });
+    res.status(HttpStatusCode.Ok).send({ message: "Batch update successful." });
   } catch (error: any) {
-    console.error("❌ Error updating production task:", error);
-    res.status(HttpStatusCode.InternalServerError).send({
-      message: "Failed to update production task.",
-      error: error.message
-    });
+    console.error("Batch update error:", error);
+    res.status(HttpStatusCode.InternalServerError).send({ message: "Failed", error: error.message });
+  }
+}
+
+export async function getItemsSummary(req: Request, res: Response) {
+  try {
+    const summary = await productionService.getAggregatedItems();
+    res.status(HttpStatusCode.Ok).send({ message: "Summary retrieved", summary });
+  } catch (error: any) {
+    res.status(HttpStatusCode.InternalServerError).send({ message: "Failed", error: error.message });
   }
 }
