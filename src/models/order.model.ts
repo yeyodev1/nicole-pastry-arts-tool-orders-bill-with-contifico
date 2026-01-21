@@ -30,6 +30,9 @@ export interface IOrder extends Document {
   };
   invoiceStatus?: "PENDING" | "PROCESSED" | "ERROR";
   invoiceInfo?: any; // To store the result from Contífico
+  // Production Fields
+  productionStage: "PENDING" | "IN_PROCESS" | "FINISHED";
+  productionNotes: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -77,6 +80,13 @@ const OrderSchema = new Schema<IOrder>(
       email: { type: String },
       address: { type: String },
     },
+    // Production Fields
+    productionStage: {
+      type: String,
+      enum: ["PENDING", "IN_PROCESS", "FINISHED"],
+      default: "PENDING"
+    },
+    productionNotes: { type: String, default: "" }
   },
   {
     timestamps: true,
