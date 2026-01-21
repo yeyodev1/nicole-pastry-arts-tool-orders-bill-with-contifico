@@ -4,26 +4,20 @@ import { OrderModel } from "../models/order.model";
 export class ProductionService {
   /**
    * Returns production tasks (Orders), sorted by delivery date (urgency).
-   * Fetches orders that are NOT Finished OR are recently finished (to see history/corrections).
    */
   async getProductionTasks() {
-    // Define a "recent" threshold for finished orders if we want to show them?
-    // For now, let's just show everything that is NOT FINISHED + everything that IS FINISHED but delivered TODAY or FUTURE (just in case they finished early but delivery is today)
-    // Actually, simple logic: Show all active (Pending, In Process) orders.
-    // And maybe show Finished orders from the last 24h?
-
     const yesterday = new Date();
     yesterday.setDate(yesterday.getDate() - 1);
 
     const tasks = await OrderModel.find({
       $or: [
-        { productionStage: { $ne: "FINISHED" } }, // PENDING or IN_PROCESS
+        { productionStage: { $ne: "FINISHED" } },
         {
           productionStage: "FINISHED",
-          updatedAt: { $gte: yesterday } // Completed recently
+          updatedAt: { $gte: yesterday }
         }
       ]
-    }).sort({ deliveryDate: 1 }); // Urgent first
+    }).sort({ deliveryDate: 1 });
 
     return tasks;
   }
@@ -34,5 +28,56 @@ export class ProductionService {
     if (updates.notes !== undefined) updateData.productionNotes = updates.notes;
 
     return await OrderModel.findByIdAndUpdate(id, updateData, { new: true });
+  }
+
+  /**
+   * Batch update multiple tasks (e.g. mark all as FINISHED)
+   */
+  async batchUpdateTasks(ids: string[], updates: { stage?: string }) {
+    const updateData: any = {};
+    if (updates.stage) updateData.productionStage = updates.stage;
+
+    // Update multiple documents
+    return await OrderModel.updateMany(
+      { _id: { $in: ids } },
+      { $set: updateData }
+    );
+  }
+
+  async getAggregatedItems() {
+    // Show ALL pending items (Today, Tomorrow, Future)
+    // No date filter needed anymore as per user request
+    const items = await OrderModel.aggregate([
+      {
+        $match: {
+          productionStage: { $in: ["PENDING", "IN_PROCESS"] },
+        },
+      },
+      { $unwind: "$products" },
+      {
+        $group: {
+          _id: "$products.name",
+          totalQuantity: { $sum: "$products.quantity" },
+          urgency: { $min: "$deliveryDate" },
+          orders: {
+            $push: {
+              id: "$_id",
+              quantity: "$products.quantity",
+              client: "$customerName",
+              delivery: "$deliveryDate",
+              stage: "$productionStage"
+            },
+          },
+        },
+      },
+      { $sort: { urgency: 1 } },
+    ]);
+    return items;
+  }
+
+  // ... Legacy summary method if needed
+  async getProductionSummary(days: number = 7) {
+    // (Can remain or be removed/ignored)
+    return []
   }
 }
