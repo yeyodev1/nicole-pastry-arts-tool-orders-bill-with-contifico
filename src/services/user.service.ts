@@ -8,7 +8,7 @@ export class UserService {
    * Login user
    */
   async loginUser({ email, password }: Pick<IUser, "email" | "password">) {
-    const user = await models.users.findOne({ email });
+    const user = await models.users.findOne({ email }).select("+password");
     if (!user) throw new Error("USER_NOT_FOUND");
 
     const passwordHash = user.password;
@@ -18,9 +18,12 @@ export class UserService {
 
     const token = await generateToken(user.id);
 
+    const userObj = user.toObject();
+    delete userObj.password;
+
     const data = {
       token,
-      user,
+      user: userObj,
     };
 
     return data;
@@ -38,7 +41,10 @@ export class UserService {
       password: hashedPassword,
     });
 
-    return newUser;
+    const userObj = newUser.toObject();
+    delete userObj.password;
+
+    return userObj;
   }
 
   /**
@@ -52,7 +58,7 @@ export class UserService {
    * Get all users
    */
   async findAll() {
-    return await models.users.find().select("-password");
+    return await models.users.find();
   }
 
   /**
