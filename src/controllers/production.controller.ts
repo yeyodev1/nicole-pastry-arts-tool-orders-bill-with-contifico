@@ -51,9 +51,53 @@ export async function batchUpdateProductionTasks(req: Request, res: Response) {
 
 export async function getItemsSummary(req: Request, res: Response) {
   try {
-    const summary = await productionService.getAggregatedItems();
-    res.status(HttpStatusCode.Ok).send({ message: "Summary retrieved", summary });
+    const dashboard = await productionService.getAggregatedItems();
+    res.status(HttpStatusCode.Ok).send({ message: "Dashboard retrieved", dashboard });
   } catch (error: any) {
+    res.status(HttpStatusCode.InternalServerError).send({ message: "Failed", error: error.message });
+  }
+}
+
+export async function updateItemStatus(req: Request, res: Response) {
+  try {
+    const { id } = req.params;
+    const { productName, status, notes } = req.body;
+
+    if (!productName || !status) {
+      res.status(HttpStatusCode.BadRequest).send({ message: "Product Name and Status are required." });
+      return;
+    }
+
+    const result = await productionService.updateProductStatus(id, productName, status, notes);
+
+    if (!result) {
+      res.status(HttpStatusCode.NotFound).send({ message: "Order or Product not found" });
+      return;
+    }
+
+    res.status(HttpStatusCode.Ok).send({ message: "Product status updated", data: result });
+  } catch (error: any) {
+    res.status(HttpStatusCode.InternalServerError).send({ message: "Failed", error: error.message });
+  }
+}
+
+export async function registerProgress(req: Request, res: Response) {
+  try {
+    const { productName, quantity } = req.body;
+
+    if (!productName || typeof quantity !== 'number' || quantity <= 0) {
+      res.status(HttpStatusCode.BadRequest).send({ message: "Invalid product or quantity." });
+      return;
+    }
+
+    const result = await productionService.registerProductionProgress(productName, quantity);
+
+    res.status(HttpStatusCode.Ok).send({
+      message: "Progress registered successfully.",
+      data: result
+    });
+  } catch (error: any) {
+    console.error("Progress register error:", error);
     res.status(HttpStatusCode.InternalServerError).send({ message: "Failed", error: error.message });
   }
 }
