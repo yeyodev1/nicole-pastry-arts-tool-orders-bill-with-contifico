@@ -241,9 +241,48 @@ export class ContificoService {
    */
   async registerCollection(documentId: string, collectionData: any) {
     try {
-      console.log(`💰 Registering collection for document ${documentId}:`, collectionData);
+      // Format date to DD/MM/YYYY if needed
+      let formattedDate = collectionData.fecha;
+      if (collectionData.fecha && collectionData.fecha.includes('-')) {
+        // Assume YYYY-MM-DD
+        const [year, month, day] = collectionData.fecha.split('-');
+        formattedDate = `${day}/${month}/${year}`;
+      }
 
-      const response = await axios.post(`${this.baseUrl}/documento/${documentId}/cobro/`, collectionData, {
+      // Ensure we use the formatted date
+      const payload = {
+        ...collectionData,
+        fecha: formattedDate
+      };
+
+      // 1057 Error Fix: Falta campo caja
+      // If no caja_id is provided, try to find one
+      if (!payload.caja_id) {
+        console.log("⚠️ No caja_id provided, fetching available Cajas...");
+        const cajas = await this.getCajas();
+
+        if (cajas && cajas.length > 0) {
+          // PREFERENCE: "Caja Dulcería" (POS ID: 00f60268-ca0c-48f9-8768-4f2625fa975a)
+          const PREFERRED_POS_ID = "00f60268-ca0c-48f9-8768-4f2625fa975a";
+
+          // Try to find the preferred box first
+          const preferredCaja = cajas.find((c: any) => c.pos === PREFERRED_POS_ID && !c.fecha_cierre); // Also ensure it is open if possible, though API might only return valid ones usually
+
+          if (preferredCaja) {
+            payload.caja_id = preferredCaja.id;
+          } else {
+            // Fallback to the first one
+            payload.caja_id = cajas[0].id;
+          }
+
+        } else {
+          console.warn("⚠️ No Cajas found in Contífico account.");
+        }
+      }
+
+      console.log(`💰 Registering collection for document ${documentId}:`, payload);
+
+      const response = await axios.post(`${this.baseUrl}/documento/${documentId}/cobro/`, payload, {
         headers: {
           Authorization: this.apiKey,
           "Content-Type": "application/json",
@@ -284,6 +323,21 @@ export class ContificoService {
         return [];
       }
       throw new Error("Failed to fetch documents from Contífico");
+    }
+  }
+  /**
+   * Get Cajas (Cash Registers)
+   */
+  async getCajas() {
+    try {
+      console.log("🔍 Fetching Cajas from Contífico...");
+      const response = await axios.get(`${this.baseUrl}/caja/`, {
+        headers: { Authorization: this.apiKey }
+      });
+      return response.data;
+    } catch (error: any) {
+      console.error("❌ Error fetching Cajas:", error.response?.data || error.message);
+      return [];
     }
   }
 }

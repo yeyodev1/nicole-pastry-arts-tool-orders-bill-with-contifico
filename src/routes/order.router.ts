@@ -22,4 +22,7 @@ router.put("/:id/invoice", OrderController.updateInvoiceData);
 // POST /api/orders/:id/collection
 router.post("/:id/collection", OrderController.registerCollection);
 
+// GET /api/orders/cajas (DEBUG)
+router.get("/cajas", OrderController.getCajas);
+
 export default router;
