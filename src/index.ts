@@ -8,6 +8,10 @@ import { UserService } from "./services/user.service";
 async function main() {
   await dbConnect();
 
+  // Seed default users
+  const userService = new UserService();
+  await userService.seedInitialUsers();
+
   const { app, server } = createApp();
 
   server.timeout = 10 * 60 * 1000;
