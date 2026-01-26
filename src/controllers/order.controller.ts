@@ -238,7 +238,15 @@ export async function processPendingInvoices(req: Request, res: Response, next: 
         if (order.paymentDetails && order.paymentDetails.monto) {
           try {
             console.log(`💰 Registering automatic collection for order ${order._id}...`);
-            await contificoService.registerCollection(invoiceResponse.id, order.paymentDetails);
+
+            // Fix Bank ID if needed for existing bad data
+            const collectionPayload = {
+              ...order.paymentDetails,
+              monto: invoiceResponse.total, // FORCE MATCH: Pay exactly what the invoice says
+              cuenta_bancaria_id: resolveBankId(order.paymentDetails.cuenta_bancaria_id)
+            };
+
+            await contificoService.registerCollection(invoiceResponse.id, collectionPayload);
             console.log(`✅ Automatic collection registered for order ${order._id}`);
           } catch (collectionError: any) {
             console.error(`⚠️ Failed to register automatic collection for order ${order._id}:`, collectionError.message);
@@ -335,6 +343,23 @@ export async function updateInvoiceData(req: Request, res: Response, next: NextF
   }
 }
 
+// Helper to map bank names to Contífico IDs
+function resolveBankId(inputName: string | undefined): string {
+  if (!inputName) return "";
+
+  const normalized = inputName.toLowerCase().trim();
+  const map: { [key: string]: string } = {
+    'banco guayaquil': 'RYWb4RPQcx81eZ1m',
+    'guayaquil': 'RYWb4RPQcx81eZ1m',
+    'banco pichincha': 'wy7aANAJs5RWbgZY',
+    'pichincha': 'wy7aANAJs5RWbgZY',
+    'banco bolivariano': 'lwKe5QQMI1lGe31R',
+    'bolivariano': 'lwKe5QQMI1lGe31R'
+  };
+
+  return map[normalized] || inputName;
+}
+
 /**
  * Register a collection (cobro) for an order
  * POST /api/orders/:id/collection
@@ -354,6 +379,11 @@ export async function registerCollection(req: Request, res: Response, next: Next
     // 2. Always Save Payment Details locally first (for batch processing)
     if (!order.paymentDetails) {
       order.paymentDetails = {} as any; // Initialize if missing
+    }
+
+    // FIX: Resolve Bank ID before saving
+    if (collectionData.cuenta_bancaria_id) {
+      collectionData.cuenta_bancaria_id = resolveBankId(collectionData.cuenta_bancaria_id);
     }
 
     // Merge or overwrite payment details
@@ -394,7 +424,13 @@ export async function registerCollection(req: Request, res: Response, next: Next
     }
 
     // 4. Register Collection in Contífico (Immediate Mode)
-    const result = await contificoService.registerCollection(documentId, collectionData);
+    // Ensure we send the fixed data
+    const payloadToSend = {
+      ...collectionData,
+      cuenta_bancaria_id: resolveBankId(collectionData.cuenta_bancaria_id) // Redundant but safe
+    };
+
+    const result = await contificoService.registerCollection(documentId, payloadToSend);
 
     res.status(HttpStatusCode.Created).send({
       message: "Collection registered successfully in Contífico.",
