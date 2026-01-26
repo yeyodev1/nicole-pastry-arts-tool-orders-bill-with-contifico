@@ -235,6 +235,31 @@ export class ContificoService {
   }
 
   /**
+   * Register a collection (cobro) for a document
+   * @param documentId The Contífico Document ID
+   * @param collectionData The collection data payload
+   */
+  async registerCollection(documentId: string, collectionData: any) {
+    try {
+      console.log(`💰 Registering collection for document ${documentId}:`, collectionData);
+
+      const response = await axios.post(`${this.baseUrl}/documento/${documentId}/cobro/`, collectionData, {
+        headers: {
+          Authorization: this.apiKey,
+          "Content-Type": "application/json",
+        },
+      });
+
+      console.log("✅ Contífico collection response:", response.data);
+      return response.data;
+    } catch (error: any) {
+      console.error("❌ Error registering collection in Contífico:", error.response?.data || error.message);
+      // Return error structure to be handled by controller
+      throw new Error(error.response?.data?.mensaje || "Failed to register collection in Contífico");
+    }
+  }
+
+  /**
    * Get documents (movements) from Contífico
    * @param options Search filters (fecha_emision, tipo, persona_id, etc.)
    */
@@ -262,3 +287,6 @@ export class ContificoService {
     }
   }
 }
+
+
+

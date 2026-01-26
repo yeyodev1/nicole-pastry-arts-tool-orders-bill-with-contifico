@@ -234,6 +234,20 @@ export async function processPendingInvoices(req: Request, res: Response, next: 
         order.invoiceInfo = invoiceResponse; // Save the invoice details
         await order.save();
 
+        // 4. Register Collection AUTOMATICALLY if payment details exist
+        if (order.paymentDetails && order.paymentDetails.monto) {
+          try {
+            console.log(`💰 Registering automatic collection for order ${order._id}...`);
+            await contificoService.registerCollection(invoiceResponse.id, order.paymentDetails);
+            console.log(`✅ Automatic collection registered for order ${order._id}`);
+          } catch (collectionError: any) {
+            console.error(`⚠️ Failed to register automatic collection for order ${order._id}:`, collectionError.message);
+            // We don't fail the invoice process, just log it. 
+            // Ideally we might want to flag the order as "INVOICED_BUT_PAYMENT_FAILED" or similar.
+            // For now, logging is sufficient as admin can retry manually via UI.
+          }
+        }
+
         results.processed++;
       } catch (error: any) {
         console.error(`❌ Failed to invoice order ${order._id}:`, error.message);
@@ -320,3 +334,80 @@ export async function updateInvoiceData(req: Request, res: Response, next: NextF
     return;
   }
 }
+
+/**
+ * Register a collection (cobro) for an order
+ * POST /api/orders/:id/collection
+ */
+export async function registerCollection(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { id } = req.params;
+    const collectionData = req.body;
+
+    // 1. Validate Order
+    const order = await models.orders.findById(id);
+    if (!order) {
+      res.status(HttpStatusCode.NotFound).send({ message: "Order not found." });
+      return;
+    }
+
+    // 2. Always Save Payment Details locally first (for batch processing)
+    if (!order.paymentDetails) {
+      order.paymentDetails = {} as any; // Initialize if missing
+    }
+
+    // Merge or overwrite payment details
+    order.paymentDetails = {
+      ...order.paymentDetails,
+      ...collectionData
+    };
+
+    // Also update top-level paymentMethod string if coming from UI mapping
+    if (collectionData.forma_cobro) {
+      // Map code to label for display
+      const methodMap: any = { 'TRA': 'Transferencia', 'EF': 'Efectivo', 'TC': 'Tarjeta de Crédito', 'CQ': 'Cheque' };
+      order.paymentMethod = methodMap[collectionData.forma_cobro] || order.paymentMethod;
+    }
+
+    await order.save();
+
+    // 3. Check Invoice Existence
+    const documentId = order.invoiceInfo?.id;
+
+    if (!documentId) {
+      // Offline/Queued Mode
+      // If invoice is not yet processed, we just save the payment info (done above)
+      // and return success so the UI doesn't error out.
+
+      // Ensure invoiceNeeded is true so batch picks it up
+      if (!order.invoiceNeeded) {
+        order.invoiceNeeded = true;
+        order.invoiceStatus = "PENDING";
+        await order.save();
+      }
+
+      res.status(HttpStatusCode.Ok).send({
+        message: "Payment registered locally. Will be synced to Contífico when invoice is generated (Batch Process).",
+        localOnly: true
+      });
+      return;
+    }
+
+    // 4. Register Collection in Contífico (Immediate Mode)
+    const result = await contificoService.registerCollection(documentId, collectionData);
+
+    res.status(HttpStatusCode.Created).send({
+      message: "Collection registered successfully in Contífico.",
+      result
+    });
+
+  } catch (error: any) {
+    console.error("❌ Error registering collection:", error);
+    res.status(HttpStatusCode.InternalServerError).send({
+      message: "Failed to register collection.",
+      error: error.message || String(error)
+    });
+  }
+}
+
+
