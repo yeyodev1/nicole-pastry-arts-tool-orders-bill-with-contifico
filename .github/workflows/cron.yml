@@ -17,12 +17,27 @@ jobs:
         steps:
             - name: Trigger Batch Invoice Endpoint Loop
               run: |
+                  # Select API URL based on branch/environment
+                  if [[ "${{ github.ref_name }}" == 'develop' ]]; then
+                     echo "🧪 TESTING MODE DETECTED (Branch: develop)"
+                     # You must add this secret in GitHub: API_BASE_URL_TESTING
+                     TARGET_URL="${{ secrets.API_BASE_URL_TESTING }}"
+                  else
+                     echo "🚀 PRODUCTION MODE DETECTED"
+                     TARGET_URL="${{ secrets.API_BASE_URL }}"
+                  fi
+
+                  if [ -z "$TARGET_URL" ]; then
+                    echo "❌ Error: Target URL is not defined. Check your Secrets."
+                    exit 1
+                  fi
+
                   echo "Starting Batch Invoice Loop..."
                   REMAINING=1
 
                   while [ "$REMAINING" -gt 0 ]; do
                     echo "Calling batch endpoint..."
-                    RESPONSE=$(curl -s -X POST "${{ secrets.API_BASE_URL }}/api/orders/batch-invoice" \
+                    RESPONSE=$(curl -s -X POST "$TARGET_URL/api/orders/batch-invoice" \
                       -H "Content-Type: application/json" \
                       -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
                       -H "ngrok-skip-browser-warning: true")
