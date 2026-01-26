@@ -1,41 +1,59 @@
 name: Batch Invoice Processing
 
 on:
-  schedule:
-    # Run at 23:59 America/Guayaquil (UTC-5)
-    # Cron matches UTC time. 23:59 UTC-5 is 04:59 UTC next day.
-    # So we run it at 04:59 UTC.
-    - cron: '59 4 * * *'
-  workflow_dispatch: # Allow manual triggering
+    push:
+        branches:
+            - develop
+    schedule:
+        # Run at 23:59 America/Guayaquil (UTC-5)
+        # Cron matches UTC time. 23:59 UTC-5 is 04:59 UTC next day.
+        # So we run it at 04:59 UTC.
+        - cron: "59 4 * * *"
+    workflow_dispatch: # Allow manual triggering
 
 jobs:
-  process-invoices:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Trigger Batch Invoice Endpoint Loop
-        run: |
-          echo "Starting Batch Invoice Loop..."
-          REMAINING=1
-          
-          while [ "$REMAINING" -gt 0 ]; do
-            echo "Calling batch endpoint..."
-            RESPONSE=$(curl -s -X POST "${{ secrets.API_BASE_URL }}/api/orders/batch-invoice" \
-              -H "Content-Type: application/json" \
-              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
-              -H "ngrok-skip-browser-warning: true")
-            
-            echo "Response: $RESPONSE"
-            
-            # Extract remaining count using grep/sed (avoiding jq dependency if not present, though ubuntu has it usually)
-            # Assuming JSON format {"remaining": 5, ...}
-            REMAINING=$(echo $RESPONSE | jq '.remaining // 0')
-            
-            echo "Remaining pending invoices: $REMAINING"
-            
-            if [ "$REMAINING" -gt 0 ]; then
-               echo "Waiting 5 seconds before next batch..."
-               sleep 5
-            fi
-          done
-          
-          echo "All batches processed successfully."
+    process-invoices:
+        runs-on: ubuntu-latest
+        steps:
+            - name: Trigger Batch Invoice Endpoint Loop
+              run: |
+                  # Select API URL based on branch/environment
+                  if [[ "${{ github.ref_name }}" == 'develop' ]]; then
+                     echo "🧪 TESTING MODE DETECTED (Branch: develop)"
+                     # You must add this secret in GitHub: API_BASE_URL_TESTING
+                     TARGET_URL="${{ secrets.API_BASE_URL_TESTING }}"
+                  else
+                     echo "🚀 PRODUCTION MODE DETECTED"
+                     TARGET_URL="${{ secrets.API_BASE_URL }}"
+                  fi
+
+                  if [ -z "$TARGET_URL" ]; then
+                    echo "❌ Error: Target URL is not defined. Check your Secrets."
+                    exit 1
+                  fi
+
+                  echo "Starting Batch Invoice Loop..."
+                  REMAINING=1
+
+                  while [ "$REMAINING" -gt 0 ]; do
+                    echo "Calling batch endpoint..."
+                    RESPONSE=$(curl -s -X POST "$TARGET_URL/api/orders/batch-invoice" \
+                      -H "Content-Type: application/json" \
+                      -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+                      -H "ngrok-skip-browser-warning: true")
+                    
+                    echo "Response: $RESPONSE"
+                    
+                    # Extract remaining count using grep/sed (avoiding jq dependency if not present, though ubuntu has it usually)
+                    # Assuming JSON format {"remaining": 5, ...}
+                    REMAINING=$(echo $RESPONSE | jq '.remaining // 0')
+                    
+                    echo "Remaining pending invoices: $REMAINING"
+                    
+                    if [ "$REMAINING" -gt 0 ]; then
+                       echo "Waiting 5 seconds before next batch..."
+                       sleep 5
+                    fi
+                  done
+
+                  echo "All batches processed successfully."

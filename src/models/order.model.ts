@@ -40,6 +40,15 @@ export interface IOrder extends Document {
   // Production Fields
   productionStage: "PENDING" | "IN_PROCESS" | "FINISHED" | "DELAYED";
   productionNotes: string;
+  paymentDetails?: {
+    forma_cobro: string;
+    monto: number;
+    fecha: string;
+    numero_comprobante?: string;
+    cuenta_bancaria_id?: string;
+    tipo_ping?: string;
+    numero_tarjeta?: string;
+  };
   createdAt: Date;
   updatedAt: Date;
 }
@@ -109,7 +118,17 @@ const OrderSchema = new Schema<IOrder>(
       enum: ["PENDING", "IN_PROCESS", "FINISHED", "DELAYED"],
       default: "PENDING"
     },
-    productionNotes: { type: String, default: "" }
+    productionNotes: { type: String, default: "" },
+    // Payment Data (Stored for batch processing)
+    paymentDetails: {
+      forma_cobro: String,
+      monto: Number,
+      fecha: String,
+      numero_comprobante: String,
+      cuenta_bancaria_id: String,
+      tipo_ping: String,
+      numero_tarjeta: String
+    }
   },
   {
     timestamps: true,
