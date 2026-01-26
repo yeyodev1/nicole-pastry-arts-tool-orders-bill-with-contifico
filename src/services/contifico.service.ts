@@ -29,12 +29,34 @@ export class ContificoService {
       const detalles = orderData.products.map((p: any) => {
         const cantidad = Number(p.quantity);
         const precio = Number(p.price);
-        const totalLine = cantidad * precio;
+        // const totalLine = cantidad * precio; // This line will be moved/recalculated later
 
-        // Assume 15% IVA for now. In a real app, this should come from product DB.
-        // If product has IVA:
-        const hasIva = true; // Defaulting to true for now based on test product
+        // Check if product is Delivery
+        const isDelivery = p.name.toLowerCase().includes('delivery');
+
+        // CONTIFICO CONFIG: Delivery is 15% Taxable.
+        // User wants $5.00 flat. We must treat price as "Tax Inclusive".
+        let hasIva = !isDelivery; // Default logic
+
+        if (isDelivery) {
+          hasIva = true; // Force True to satisfy API (Avoid Error 1098)
+          // Back-calculate price so Total = User Price
+          // Price = 5 / 1.15 = 4.3478
+          // Tax = 0.6521
+          // Total = 5.00
+          // We modify the 'precio' variable used for calculation here
+          // Note: 'precio' incoming is unit price.
+        }
+
         const porcentaje_iva = hasIva ? 15 : 0;
+
+        // Recalculate values if Delivery (Inclusive)
+        let calcPrice = precio;
+        if (isDelivery && hasIva) {
+          calcPrice = precio / 1.15;
+        }
+
+        const totalLine = cantidad * calcPrice;
 
         let base_cero = 0;
         let base_gravable = 0;
@@ -54,7 +76,10 @@ export class ContificoService {
         return {
           producto_id: p.contifico_id || "9pgenB6GQcVWoeNQ", // Fallback to test product if missing, but should be mapped
           cantidad: cantidad,
-          precio: precio,
+          // For Contifico, if we want to force the price, we just send it.
+          // However, verify if 'pvp_manual' is needed or if sending 'precio' is enough.
+          // Documentation says 'precio' is the unit price.
+          precio: Number(calcPrice.toFixed(4)), // High precision for unit price
           descripcion: p.name,
           porcentaje_iva: porcentaje_iva,
           base_cero: base_cero,
