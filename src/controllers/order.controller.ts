@@ -9,7 +9,7 @@ export async function createOrder(req: Request, res: Response, next: NextFunctio
   try {
     const orderData = req.body;
 
-    // 1. Basic Validation & Defaults
+    // 1. Basic Validation
     if (!orderData.customerName || !orderData.products || orderData.products.length === 0) {
       res.status(400).send({
         message: "Customer name and products are required.",
@@ -17,30 +17,33 @@ export async function createOrder(req: Request, res: Response, next: NextFunctio
       return;
     }
 
-    // Default: Set orderDate to now if missing
-    if (!orderData.orderDate) {
-      orderData.orderDate = new Date();
+    if (!orderData.deliveryTime) {
+      res.status(400).send({
+        message: "Delivery time is required.",
+      });
+      return;
     }
 
-    // Default: Sales Channel
-    if (!orderData.salesChannel) {
-      orderData.salesChannel = "Web";
-    }
-
-    // Default: Responsible
-    if (!orderData.responsible) {
-      orderData.responsible = "Web";
-    }
-
-    // Default: Payment Method
-    if (!orderData.paymentMethod) {
-      orderData.paymentMethod = "Por confirmar";
-    }
-
-    // Map deliveryType: 'pickup' -> 'retiro'
+    // Map deliveryType legacy check
     if (orderData.deliveryType === "pickup") {
       orderData.deliveryType = "retiro";
     }
+
+    // STRICT VALIDATION: Delivery Requirements
+    if (orderData.deliveryType === "delivery") {
+      if (!orderData.googleMapsLink || !orderData.deliveryAddress) {
+        res.status(400).send({
+          message: "For Delivery orders, Google Maps Link and Delivery Address are mandatory.",
+        });
+        return;
+      }
+    }
+
+    // Default defaults
+    if (!orderData.orderDate) orderData.orderDate = new Date();
+    if (!orderData.salesChannel) orderData.salesChannel = "Web";
+    if (!orderData.responsible) orderData.responsible = "Web";
+    if (!orderData.paymentMethod) orderData.paymentMethod = "Por confirmar";
 
     // Calculate totalValue if missing
     if (orderData.totalValue === undefined || orderData.totalValue === null) {
@@ -54,32 +57,66 @@ export async function createOrder(req: Request, res: Response, next: NextFunctio
     const newOrder = new models.orders(orderData);
     await newOrder.save();
 
-    // 3. Handle Invoicing via Contífico if requested
-    // DEFERRED LOGIC: We no longer create invoice immediately.
-    // It is marked as 'PENDING' by default in the model if invoiceNeeded is true.
+    // 3. Generate WhatsApp Message (Strict Format)
+    /*
+      CONFIRMACIÓN DE PEDIDO - NICOLE PASTRY
+      Tipo de Orden: [Ej: Delivery saliendo de Ceibos]
+      Cliente: [Nombre]
+      Cédula/RUC: [Dato]
+      Correo: [Dato]
+      Celular: [Dato]
+      Fecha de Entrega: [DD/MM/AAAA]
+      Hora de Entrega/Retiro: [Hora solicitada por cliente]
+      Items (Nombre Contífico):
+      [Cantidad] x [Nombre Exacto en Contífico]
+      Dirección de Entrega: [Texto]
+      Link Maps: [Pegar Link Aquí]
+    */
 
-    // 4. Generate WhatsApp Message
     const productsString = orderData.products
-      .map((p: any) => `- ${p.quantity}x ${p.name}`)
+      .map((p: any) => `${p.quantity} x ${p.name}`)
       .join("\n");
 
+    const deliveryDateFormatted = new Date(orderData.deliveryDate).toLocaleDateString('es-EC');
+
+    // Construct "Type of Order" string
+    // e.g. "Delivery saliendo de Ceibos" or "Retiro en local - San Marino"
+    let typeOfOrder = "";
+    if (orderData.deliveryType === 'retiro') {
+      typeOfOrder = `Retiro en local - ${orderData.branch || 'S/N'}`;
+    } else {
+      typeOfOrder = `Delivery saliendo de - ${orderData.branch || 'S/N'}`;
+    }
+
     const whatsappMessage = `
-Confirmado su pedido
-Nombre: ${orderData.customerName}
-Dirección factura: ${orderData.invoiceData?.address || "N/A"}
-Retiro/Entrega: ${orderData.deliveryType}
-Pedido: 
-${productsString}
-Fecha y Hora: ${new Date(orderData.deliveryDate).toLocaleString()}
-Celular: ${orderData.customerPhone}
-Cédula o RUC: ${orderData.invoiceData?.ruc || "N/A"}
+CONFIRMACIÓN DE PEDIDO - NICOLE PASTRY
+
+Tipo de Orden: ${typeOfOrder}
+
+Cliente: ${orderData.customerName}
+
+Cédula/RUC: ${orderData.invoiceData?.ruc || "N/A"}
+
 Correo: ${orderData.invoiceData?.email || "N/A"}
-Ubicación: ${orderData.deliveryType === "delivery" ? "See comments for address" : "Retiro en local"}
+
+Celular: ${orderData.customerPhone}
+
+Fecha de Entrega: ${deliveryDateFormatted}
+
+Hora de Entrega/Retiro: ${orderData.deliveryTime}
+
+Items (Nombre Contífico):
+
+${productsString}
+
+Dirección de Entrega: ${orderData.deliveryType === 'delivery' ? orderData.deliveryAddress : 'N/A (Retiro)'}
+
+Link Maps: ${orderData.googleMapsLink || 'N/A'}
     `.trim();
 
-    // 5. Send Response
+    // 4. Send Response
     res.status(201).send({
-      message: "Order created successfully. Invoice will be generated at the end of the day.",
+      message: "Order created successfully.",
       order: newOrder,
       whatsappMessage
     });

@@ -13,11 +13,15 @@ export interface IOrderProduct {
 export interface IOrder extends Document {
   orderDate: Date;
   deliveryDate: Date;
+  deliveryTime: string; // Specific time string (e.g. "14:30")
   customerName: string;
   customerPhone: string;
   salesChannel: string;
   products: IOrderProduct[];
   deliveryType: "delivery" | "retiro";
+  branch?: "San Marino" | "Mall del Sol" | "Centro de Producción"; // New branch field
+  googleMapsLink?: string; // For delivery
+  deliveryAddress?: string; // Written address
   totalValue: number;
   deliveryValue: number;
   paymentMethod: string;
@@ -44,6 +48,7 @@ const OrderSchema = new Schema<IOrder>(
   {
     orderDate: { type: Date, required: true },
     deliveryDate: { type: Date, required: true },
+    deliveryTime: { type: String, required: true }, // New required field
     customerName: { type: String, required: true },
     customerPhone: { type: String, required: true },
     salesChannel: { type: String, required: true },
@@ -68,6 +73,13 @@ const OrderSchema = new Schema<IOrder>(
       enum: ["delivery", "retiro"],
       required: true,
     },
+    branch: {
+      type: String,
+      enum: ["San Marino", "Mall del Sol", "Centro de Producción"],
+      required: false // Optional because delivery might not always imply a "source branch" in all legacy data, but we will enforce in UI
+    },
+    googleMapsLink: { type: String },
+    deliveryAddress: { type: String },
     totalValue: { type: Number, required: true },
     deliveryValue: { type: Number, default: 0 },
     paymentMethod: { type: String, required: true },
