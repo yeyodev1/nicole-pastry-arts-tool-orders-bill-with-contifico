@@ -22,4 +22,6 @@ router.put("/:id/invoice", OrderController.updateInvoiceData);
 // POST /api/orders/:id/collection
 router.post("/:id/collection", OrderController.registerCollection);
 
+
+
 export default router;

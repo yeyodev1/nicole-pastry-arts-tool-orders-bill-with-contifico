@@ -97,8 +97,13 @@ export class ContificoService {
       const randomSeq = Math.floor(Math.random() * 900000) + 100000;
       const docNumber = `001-001-000${randomSeq}`;
 
+      // FIX: Use "Caja Dulcería" POS ID instead of generic API token
+      // This ensures the invoice belongs to the physical box where we want to register collections.
+      // POS: Caja Dulcería (00f60268-ca0c-48f9-8768-4f2625fa975a)
+      const POS_DULCERIA_ID = "00f60268-ca0c-48f9-8768-4f2625fa975a";
+
       const payload = {
-        pos: this.token,
+        pos: POS_DULCERIA_ID,
         fecha_emision: new Date().toLocaleDateString("en-GB"), // DD/MM/YYYY
         tipo_documento: "FAC",
         documento: docNumber,
@@ -290,15 +295,24 @@ export class ContificoService {
           // PREFERENCE: "Caja Dulcería" (POS ID: 00f60268-ca0c-48f9-8768-4f2625fa975a)
           const PREFERRED_POS_ID = "00f60268-ca0c-48f9-8768-4f2625fa975a";
 
-          // Try to find the preferred box first
-          const preferredCaja = cajas.find((c: any) => c.pos === PREFERRED_POS_ID && !c.fecha_cierre); // Also ensure it is open if possible, though API might only return valid ones usually
+          // Strategy: Find ALL sessions for the preferred POS and pick the LATEST one.
+          // We ignore 'fecha_cierre' because sometimes active sessions have it populated.
+          const posSessions = cajas.filter((c: any) => c.pos === PREFERRED_POS_ID);
 
-          if (preferredCaja) {
-            payload.caja_id = preferredCaja.id;
+          let targetCajaId = "";
+
+          if (posSessions.length > 0) {
+            // Assume the list is chronological or sort it? API usually returns chronological.
+            // Taking the last one is the safest bet for "most recent".
+            const latestSession = posSessions[posSessions.length - 1];
+            targetCajaId = latestSession.id;
           } else {
-            // Fallback to the first one
-            payload.caja_id = cajas[0].id;
+            // Fallback to the very first caja in the list if no match for POS
+            targetCajaId = cajas[0].id;
           }
+
+          payload.caja_id = targetCajaId;
+          console.log(`✅ Using Auto-Selected Caja ID: ${targetCajaId}`);
 
         } else {
           console.warn("⚠️ No Cajas found in Contífico account.");

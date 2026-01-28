@@ -18,6 +18,19 @@ export async function getProductionTasks(req: Request, res: Response) {
   }
 }
 
+export async function getAllProductionOrders(req: Request, res: Response) {
+  try {
+    const orders = await productionService.getAllOrders();
+    res.status(HttpStatusCode.Ok).send({
+      message: "All production orders retrieved successfully.",
+      count: orders.length,
+      data: orders
+    });
+  } catch (error: any) {
+    res.status(HttpStatusCode.InternalServerError).send({ message: "Failed", error: error.message });
+  }
+}
+
 export async function updateProductionTask(req: Request, res: Response) {
   try {
     const { id } = req.params;
