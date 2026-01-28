@@ -232,7 +232,16 @@ export async function processPendingInvoices(req: Request, res: Response, next: 
 
         order.invoiceStatus = "PROCESSED";
         order.invoiceInfo = invoiceResponse; // Save the invoice details
+        order.invoiceInfo = invoiceResponse; // Save the invoice details
         await order.save();
+
+        // 3.1 Trigger SRI Authorization (Manual Trigger Feature)
+        try {
+          // We call this immediately so the user doesn't have to wait for the Contífico hourly script
+          await contificoService.sendToSri(invoiceResponse.id);
+        } catch (sriError) {
+          console.warn(`⚠️ Failed to trigger SRI for order ${order._id} (non-blocking)`);
+        }
 
         // 4. Register Collection AUTOMATICALLY if payment details exist
         if (order.paymentDetails && order.paymentDetails.monto) {

@@ -417,7 +417,25 @@ export class ContificoService {
       return [];
     }
   }
+
+  /**
+   * Send document to SRI for authorization
+   * @param documentId Document ID
+   */
+  async sendToSri(documentId: string) {
+    try {
+      console.log(`📡 Sending document ${documentId} to SRI...`);
+      // PUT /documento/<ID>/sri/ - No body required
+      const response = await axios.put(`${this.baseUrl}/documento/${documentId}/sri/`, {}, {
+        headers: { Authorization: this.apiKey }
+      });
+      console.log("✅ SRI Authorization triggered:", response.data);
+      return response.data;
+    } catch (error: any) {
+      console.warn("⚠️ Error triggering SRI authorization:", error.response?.data || error.message);
+      // We don't throw here because the invoice is already created and valid, just not authorized yet.
+      // Contifico auto-script might pick it up later.
+      return { error: error.response?.data || error.message };
+    }
+  }
 }
-
-
-
