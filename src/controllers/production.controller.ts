@@ -71,6 +71,77 @@ export async function getItemsSummary(req: Request, res: Response) {
   }
 }
 
+export async function registerDispatchOrder(req: Request, res: Response) {
+  try {
+    const { id } = req.params;
+    // Body: { destination, items, notes, reportedBy }
+    const result = await productionService.registerDispatch(id, req.body);
+    res.status(HttpStatusCode.Ok).send({ message: "Dispatch reported successfully.", data: result });
+  } catch (error: any) {
+    res.status(HttpStatusCode.InternalServerError).send({ message: "Failed", error: error.message });
+  }
+}
+
+export async function getProductionReports(req: Request, res: Response) {
+  try {
+    const range = (req.query.range as 'today' | 'week') || 'today';
+    const stats = await productionService.getReportsStats(range);
+    res.status(HttpStatusCode.Ok).send({ message: "Reports generated successfully.", data: stats });
+  } catch (error: any) {
+    res.status(HttpStatusCode.InternalServerError).send({ message: "Failed", error: error.message });
+  }
+}
+
+export async function batchRegisterDispatchOrder(req: Request, res: Response) {
+  try {
+    const { ids } = req.body;
+    if (!ids || !Array.isArray(ids) || ids.length === 0) {
+      return res.status(HttpStatusCode.BadRequest).send({ message: "No IDs provided" });
+    }
+
+    // In a real app, 'reportedBy' would come from auth token user
+    const result = await productionService.batchRegisterDispatch(ids, "Producción (Masivo)");
+
+    res.status(HttpStatusCode.Ok).send({
+      message: `Batch dispatch processed. Success: ${result.success}, Failed: ${result.failed}`,
+      data: result
+    });
+  } catch (error: any) {
+    res.status(HttpStatusCode.InternalServerError).send({ message: "Batch dispatch failed", error: error.message });
+  }
+}
+
+export async function registerDispatchProgress(req: Request, res: Response) {
+  try {
+    const { destination, items } = req.body;
+
+    if (!destination || !items || !Array.isArray(items)) {
+      return res.status(HttpStatusCode.BadRequest).send({ message: "Invalid payload. Destination and items array required." });
+    }
+
+    const result = await productionService.registerDispatchProgress(destination, items);
+
+    res.status(HttpStatusCode.Ok).send({
+      message: "Dispatch progress registered",
+      data: result
+    });
+  } catch (error: any) {
+    res.status(HttpStatusCode.InternalServerError).send({ message: "Error registering dispatch progress", error: error.message });
+  }
+}
+
+export async function editDispatchOrder(req: Request, res: Response) {
+  try {
+    const { id, dispatchId } = req.params;
+    // Body: { items, notes }
+    const result = await productionService.updateDispatch(id, dispatchId, req.body);
+    res.status(HttpStatusCode.Ok).send({ message: "Dispatch updated successfully.", data: result });
+  } catch (error: any) {
+    const status = error.message.includes("Edit window") ? HttpStatusCode.Forbidden : HttpStatusCode.InternalServerError;
+    res.status(status).send({ message: "Failed", error: error.message });
+  }
+}
+
 export async function updateItemStatus(req: Request, res: Response) {
   try {
     const { id } = req.params;
