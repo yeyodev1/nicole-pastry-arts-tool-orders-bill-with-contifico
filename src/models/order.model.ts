@@ -13,7 +13,7 @@ export interface IOrderProduct {
 export interface IOrder extends Document {
   orderDate: Date;
   deliveryDate: Date;
-  deliveryTime: string; // Specific time string (e.g. "14:30")
+  deliveryTime?: string; // Specific time string (e.g. "14:30")
   customerName: string;
   customerPhone: string;
   salesChannel: string;
@@ -57,7 +57,7 @@ const OrderSchema = new Schema<IOrder>(
   {
     orderDate: { type: Date, required: true },
     deliveryDate: { type: Date, required: true },
-    deliveryTime: { type: String, required: true }, // New required field
+    deliveryTime: { type: String, required: false }, // New optional field (was required causing issues)
     customerName: { type: String, required: true },
     customerPhone: { type: String, required: true },
     salesChannel: { type: String, required: true },
