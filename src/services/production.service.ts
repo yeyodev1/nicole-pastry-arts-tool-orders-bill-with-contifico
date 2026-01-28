@@ -27,6 +27,16 @@ export class ProductionService {
     return updatedTasks;
   }
 
+  /**
+   * Returns a list of all active production orders with full details.
+   * Useful for the tabular list view.
+   */
+  async getAllOrders() {
+    // Reuse the logic from getProductionTasks for now as it correctly identifies active tasks
+    // and handles the "DELAYED" status update which is critical.
+    return await this.getProductionTasks();
+  }
+
   async updateTask(id: string, updates: { stage?: string; notes?: string }) {
     const updateData: any = {};
     if (updates.stage) updateData.productionStage = updates.stage;
