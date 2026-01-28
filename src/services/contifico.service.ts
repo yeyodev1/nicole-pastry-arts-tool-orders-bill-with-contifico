@@ -305,6 +305,42 @@ export class ContificoService {
         }
       }
 
+      // FIX: Resolve Bank Account ID for Transfer 'TRA'
+      if (payload.forma_cobro === 'TRA') {
+        const providedId = payload.cuenta_bancaria_id;
+        // Check if it looks like a name (contains spaces) or is empty
+        // ID is usually short alphanumeric. Names have spaces.
+        const looksLikeName = providedId && (providedId.includes(' ') || providedId.length > 25);
+
+        if (!providedId || looksLikeName) {
+          console.log(`⚠️ Resolving Bank Account ID for '${providedId || "default"}'...`);
+          const banks = await this.getBankAccounts();
+
+          if (banks && banks.length > 0) {
+            let match;
+            if (providedId) {
+              match = banks.find((b: any) => b.nombre?.toLowerCase().includes(providedId.toLowerCase()));
+            }
+
+            // Default to first if not found or no name provided
+            if (!match) {
+              console.warn(`⚠️ Bank '${providedId}' not found. Using first available bank account.`);
+              match = banks[0];
+            }
+
+            if (match) {
+              console.log(`✅ Selected Bank Account: ${match.nombre} (${match.id})`);
+              payload.cuenta_bancaria_id = match.id;
+
+              // Ensure tipo_ping is set (D = Deposito)
+              if (!payload.tipo_ping) payload.tipo_ping = "D";
+            }
+          } else {
+            console.error("❌ No Bank Accounts found in Contífico. Transfer registration may fail.");
+          }
+        }
+      }
+
       console.log(`💰 Registering collection for document ${documentId}:`, payload);
 
       const response = await axios.post(`${this.baseUrl}/documento/${documentId}/cobro/`, payload, {
@@ -362,6 +398,22 @@ export class ContificoService {
       return response.data;
     } catch (error: any) {
       console.error("❌ Error fetching Cajas:", error.response?.data || error.message);
+      return [];
+    }
+  }
+
+  /**
+   * Get Bank Accounts (Cuentas Bancarias)
+   */
+  async getBankAccounts() {
+    try {
+      // Endpoint: /banco/cuenta/
+      const response = await axios.get(`${this.baseUrl}/banco/cuenta/`, {
+        headers: { Authorization: this.apiKey }
+      });
+      return response.data;
+    } catch (error: any) {
+      console.warn("⚠️ Error fetching Bank Accounts (trying /banco/cuenta/):", error.response?.data || error.message);
       return [];
     }
   }
