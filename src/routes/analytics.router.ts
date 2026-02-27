@@ -1,5 +1,6 @@
 import express from "express";
 import * as AnalyticsController from "../controllers/analytics.controller";
+import { authMiddleware } from "../middlewares/auth.middleware";
 
 const router = express.Router();
 
@@ -10,6 +11,6 @@ router.get("/dashboard", AnalyticsController.getDashboardStats);
 router.post("/sync", AnalyticsController.syncAnalytics);
 
 // GET /api/analytics/sales-by-responsible
-router.get("/sales-by-responsible", AnalyticsController.getSalesByResponsible);
+router.get("/sales-by-responsible", authMiddleware as any, AnalyticsController.getSalesByResponsible);
 
 export default router;

@@ -236,7 +236,15 @@ export async function getSalesByResponsible(req: AuthRequest, res: Response, nex
 
     // --- DATA ISOLATION ---
     // Extract user from request (populated by authMiddleware)
-    const currentUser = (req as any).user;
+    const jwtUser = (req as any).user;
+
+    // Fetch fresh user to avoid stale JWT issues
+    let dbUser = jwtUser;
+    if (jwtUser?.email) {
+      dbUser = await models.users.findOne({ email: jwtUser.email }).lean() || jwtUser;
+    }
+
+    const currentRole = dbUser?.role?.toUpperCase();
 
     const orderMatch: any = {
       createdAt: { $gte: startDate, $lte: endDate },
@@ -244,8 +252,11 @@ export async function getSalesByResponsible(req: AuthRequest, res: Response, nex
     };
 
     // If SALES_REP, only show their own data
-    if (currentUser && currentUser.role === 'SALES_REP') {
-      orderMatch.responsible = currentUser.name;
+    if (currentRole === 'SALES_REP' || currentRole === 'SALES') {
+      // Use case-insensitive regex for Name to catch "diego reyes" vs "Diego Reyes"
+      if (dbUser.name) {
+        orderMatch.responsible = { $regex: new RegExp(`^${dbUser.name}$`, "i") };
+      }
     }
 
     const stats = await models.orders.aggregate([
@@ -290,7 +301,7 @@ export async function getSalesByResponsible(req: AuthRequest, res: Response, nex
         from: startDate.toLocaleDateString("es-EC", { timeZone: "America/Guayaquil" }),
         to: endDate.toLocaleDateString("es-EC", { timeZone: "America/Guayaquil" })
       },
-      monthlyGoal: 10000,
+      monthlyGoal: 10000 * Math.max(1, enhancedStats.length),
       stats: enhancedStats
     });
     return;

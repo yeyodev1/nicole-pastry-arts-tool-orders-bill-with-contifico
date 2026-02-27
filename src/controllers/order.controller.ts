@@ -10,10 +10,17 @@ const contificoService = new ContificoService();
 export async function createOrder(req: AuthRequest, res: Response, next: NextFunction) {
   try {
     const orderData = req.body;
-    const currentUser = req.user;
+    const jwtUser = req.user;
+
+    // Fetch fresh user to avoid stale JWT issues
+    let currentUser: any = jwtUser;
+    if (jwtUser?.email) {
+      currentUser = await models.users.findOne({ email: jwtUser.email }).lean() || jwtUser;
+    }
+    const currentRole = currentUser?.role?.toUpperCase();
 
     // Auto-populate responsible from logged-in user
-    if (currentUser && (currentUser.role === 'SALES_REP' || currentUser.role === 'SALES_MANAGER')) {
+    if (currentUser && (currentRole === 'SALES_REP' || currentRole === 'SALES_MANAGER' || currentRole === 'SALES')) {
       orderData.responsible = currentUser.name;
     }
 
@@ -212,12 +219,22 @@ Valor Envío: $${orderData.deliveryValue || 0}
 export async function getOrders(req: AuthRequest, res: Response, next: NextFunction) {
   try {
     const { search, startDate, endDate } = req.query;
-    const currentUser = req.user;
+    const jwtUser = req.user;
+
+    // Fetch fresh user to avoid stale JWT issues
+    let currentUser: any = jwtUser;
+    if (jwtUser?.email) {
+      currentUser = await models.users.findOne({ email: jwtUser.email }).lean() || jwtUser;
+    }
+    const currentRole = currentUser?.role?.toUpperCase();
+
     const query: any = {};
 
     // Data Isolation for Sales Reps
-    if (currentUser && currentUser.role === 'SALES_REP') {
-      query.responsible = currentUser.name;
+    if (currentUser && (currentRole === 'SALES_REP' || currentRole === 'SALES')) {
+      if (currentUser.name) {
+        query.responsible = { $regex: new RegExp(`^${currentUser.name}$`, "i") };
+      }
     }
 
     // 1. Search Filter (Name, RUC, Email)
