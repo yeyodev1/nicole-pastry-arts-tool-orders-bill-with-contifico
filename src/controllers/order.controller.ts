@@ -900,7 +900,7 @@ export async function settleOrderInIsland(req: AuthRequest, res: Response) {
  */
 export async function getDeliveryReport(req: AuthRequest, res: Response, next: NextFunction) {
   try {
-    const { startDate, endDate, deliveryPersonId } = req.query;
+    const { startDate, endDate, deliveryPersonId, page = "1", limit = "10" } = req.query;
 
     if (!startDate || !endDate) {
       res.status(HttpStatusCode.BadRequest).send({
@@ -908,6 +908,10 @@ export async function getDeliveryReport(req: AuthRequest, res: Response, next: N
       });
       return;
     }
+
+    const pageNumber = parseInt(page as string, 10) || 1;
+    const limitNumber = parseInt(limit as string, 10) || 10;
+    const skip = (pageNumber - 1) * limitNumber;
 
     const query: any = {
       deliveryDate: {
@@ -957,13 +961,18 @@ export async function getDeliveryReport(req: AuthRequest, res: Response, next: N
       return acc;
     }, {});
 
+    const paginatedOrders = orders.slice(skip, skip + limitNumber);
+    const totalPages = Math.ceil(orders.length / limitNumber) || 1;
+
     res.status(HttpStatusCode.Ok).send({
       message: "Delivery report retrieved successfully.",
       data: {
         total: Number(total.toFixed(2)),
-        count: orders.length,
+        count: orders.length, // total items in date range
+        totalPages,
+        currentPage: pageNumber,
         summary: Object.values(summaryByPerson),
-        orders
+        orders: paginatedOrders // only return this page's items
       }
     });
     return;
