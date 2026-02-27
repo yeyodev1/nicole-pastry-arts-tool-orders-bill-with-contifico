@@ -295,13 +295,16 @@ export async function getSalesByResponsible(req: AuthRequest, res: Response, nex
       };
     });
 
+    // Calculate the number of actual salespeople for the dynamic goal (exclude Digital/Web)
+    const activeSalespeopleCount = enhancedStats.filter(s => s.role !== 'Digital').length;
+
     res.status(HttpStatusCode.Ok).send({
       message: "Sales by responsible retrieved successfully.",
       range: {
         from: startDate.toLocaleDateString("es-EC", { timeZone: "America/Guayaquil" }),
         to: endDate.toLocaleDateString("es-EC", { timeZone: "America/Guayaquil" })
       },
-      monthlyGoal: 10000 * Math.max(1, enhancedStats.length),
+      monthlyGoal: 10000 * Math.max(1, activeSalespeopleCount),
       stats: enhancedStats
     });
     return;
