@@ -192,6 +192,7 @@ export class POSRestockService {
       bajasNote?: string;
       stockFinal: number;
       pedidoFinal?: number;
+      deliveryRounds?: Array<{ label: string; quantity: number }>;
       detailedLosses?: Array<{
         quantity: number;
         reason: string;
@@ -263,6 +264,7 @@ export class POSRestockService {
         stockObjectiveTomorrow,
         pedidoSugerido,
         pedidoFinal,
+        deliveryRounds: item.deliveryRounds || [],
       };
     });
 
@@ -284,51 +286,131 @@ export class POSRestockService {
     // 3. Sync with Production/Bodega (Order model)
     const restockItems = processedItems.filter(i => i.pedidoFinal > 0);
 
-    // Categories to split by
-    const categories: ("Producción" | "Bodega")[] = ["Producción", "Bodega"];
+    // Check if any item has delivery rounds
+    const hasDeliveryRounds = restockItems.some(
+      (i) => i.deliveryRounds && i.deliveryRounds.length > 0
+    );
 
-    for (const cat of categories) {
-      const catItems = restockItems.filter(i => i.category === cat);
-      const salesChannelLabel = cat === "Bodega" ? "Restock-Bodega" : "Restock";
-      const customerNamePrefix = cat === "Bodega" ? "REPOSICIÓN BODEGA" : "REPOSICIÓN";
+    if (hasDeliveryRounds) {
+      // --- Round-based sync: one Order per unique round label ---
+      // Collect all unique round labels
+      const roundLabels = new Set<string>();
+      for (const item of restockItems) {
+        if (item.deliveryRounds && item.deliveryRounds.length > 0) {
+          for (const round of item.deliveryRounds) {
+            roundLabels.add(round.label);
+          }
+        }
+      }
 
-      if (catItems.length === 0) {
-        // If no items for this category, remove any existing restock order for this branch/date/category
-        await models.orders.deleteOne({
-          branch,
-          deliveryDate: targetDate,
-          salesChannel: salesChannelLabel
-        });
-      } else {
-        // Upsert a "Restock Order" for this category
-        const restockOrderData = {
-          branch,
-          deliveryDate: targetDate,
-          orderDate: date,
-          customerName: `${customerNamePrefix}: ${branch}`,
-          customerPhone: "N/A",
-          salesChannel: salesChannelLabel,
-          deliveryType: "retiro",
-          totalValue: 0,
-          paymentMethod: "Interno",
-          responsible: "Web",
-          invoiceNeeded: false,
-          productionStage: "PENDING",
-          products: catItems.map(item => ({
-            name: item.productName,
-            quantity: item.pedidoFinal,
-            price: 0,
-            contifico_id: objectiveMap[item.productName]?.contificoId,
-            productionStatus: "PENDING",
-            produced: 0
-          }))
-        };
+      // Delete old restock orders for this branch/date (both categories)
+      await models.orders.deleteMany({
+        branch,
+        deliveryDate: targetDate,
+        salesChannel: { $in: ["Restock", "Restock-Bodega"] },
+      });
 
-        await models.orders.findOneAndUpdate(
-          { branch, deliveryDate: targetDate, salesChannel: salesChannelLabel },
-          { $set: restockOrderData },
-          { upsert: true, new: true }
-        );
+      // Create one Order per round label
+      for (const roundLabel of roundLabels) {
+        // Gather items for this round across both categories
+        const categories: ("Producción" | "Bodega")[] = ["Producción", "Bodega"];
+
+        for (const cat of categories) {
+          const salesChannelLabel = cat === "Bodega" ? "Restock-Bodega" : "Restock";
+          const customerNamePrefix = cat === "Bodega" ? "REPOSICIÓN BODEGA" : "REPOSICIÓN";
+
+          const roundItems = restockItems
+            .filter((i) => i.category === cat)
+            .map((item) => {
+              const round = (item.deliveryRounds || []).find(
+                (r) => r.label === roundLabel
+              );
+              return round && round.quantity > 0
+                ? { ...item, roundQuantity: round.quantity }
+                : null;
+            })
+            .filter(Boolean) as Array<(typeof restockItems)[0] & { roundQuantity: number }>;
+
+          if (roundItems.length === 0) continue;
+
+          const restockOrderData = {
+            branch,
+            deliveryDate: targetDate,
+            orderDate: date,
+            customerName: `${customerNamePrefix}: ${branch}`,
+            customerPhone: "N/A",
+            salesChannel: salesChannelLabel,
+            deliveryType: "retiro",
+            totalValue: 0,
+            paymentMethod: "Interno",
+            responsible: "Web",
+            invoiceNeeded: false,
+            productionStage: "PENDING",
+            comments: roundLabel,
+            products: roundItems.map((item) => ({
+              name: item.productName,
+              quantity: item.roundQuantity,
+              price: 0,
+              contifico_id: objectiveMap[item.productName]?.contificoId,
+              productionStatus: "PENDING",
+              produced: 0,
+            })),
+          };
+
+          await models.orders.create(restockOrderData);
+        }
+      }
+    } else {
+      // --- Legacy: one Order per category (no rounds) ---
+      const categories: ("Producción" | "Bodega")[] = ["Producción", "Bodega"];
+
+      for (const cat of categories) {
+        const catItems = restockItems.filter((i) => i.category === cat);
+        const salesChannelLabel =
+          cat === "Bodega" ? "Restock-Bodega" : "Restock";
+        const customerNamePrefix =
+          cat === "Bodega" ? "REPOSICIÓN BODEGA" : "REPOSICIÓN";
+
+        if (catItems.length === 0) {
+          await models.orders.deleteOne({
+            branch,
+            deliveryDate: targetDate,
+            salesChannel: salesChannelLabel,
+          });
+        } else {
+          const restockOrderData = {
+            branch,
+            deliveryDate: targetDate,
+            orderDate: date,
+            customerName: `${customerNamePrefix}: ${branch}`,
+            customerPhone: "N/A",
+            salesChannel: salesChannelLabel,
+            deliveryType: "retiro",
+            totalValue: 0,
+            paymentMethod: "Interno",
+            responsible: "Web",
+            invoiceNeeded: false,
+            productionStage: "PENDING",
+            products: catItems.map((item) => ({
+              name: item.productName,
+              quantity: item.pedidoFinal,
+              price: 0,
+              contifico_id: objectiveMap[item.productName]?.contificoId,
+              productionStatus: "PENDING",
+              produced: 0,
+            })),
+          };
+
+          await models.orders.findOneAndUpdate(
+            {
+              branch,
+              deliveryDate: targetDate,
+              salesChannel: salesChannelLabel,
+            },
+            { $set: restockOrderData },
+            { upsert: true, new: true }
+          );
+        }
       }
     }
 

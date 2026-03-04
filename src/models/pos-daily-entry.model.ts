@@ -9,6 +9,10 @@ export interface IPOSDailyEntryItem {
   stockObjectiveTomorrow: number;
   pedidoSugerido: number;
   pedidoFinal: number;
+  deliveryRounds?: Array<{
+    label: string;
+    quantity: number;
+  }>;
 }
 
 export interface IPOSDailyEntry extends Document {
@@ -30,6 +34,13 @@ const POSDailyEntryItemSchema = new Schema<IPOSDailyEntryItem>(
     stockObjectiveTomorrow: { type: Number, required: true },
     pedidoSugerido: { type: Number, required: true },
     pedidoFinal: { type: Number, required: true },
+    deliveryRounds: [
+      {
+        label: { type: String, required: true },
+        quantity: { type: Number, required: true },
+        _id: false,
+      },
+    ],
   },
   { _id: false }
 );

@@ -211,6 +211,7 @@ export class ProductionService {
           productionStatus: "$products.productionStatus",
           deliveryDate: "$deliveryDate",
           customerName: "$customerName",
+          comments: "$comments",
           stage: "$productionStage",
           orderId: "$_id"
         }
@@ -293,7 +294,8 @@ export class ProductionService {
           delivery: item.deliveryDate,
           stage: item.stage,
           notes: item.productionNotes,
-          status: item.productionStatus
+          status: item.productionStatus,
+          deliveryRound: item.comments || null
         });
       }
       return Array.from(groupedMap.values());
