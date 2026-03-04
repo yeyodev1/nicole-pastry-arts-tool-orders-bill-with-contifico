@@ -155,33 +155,31 @@ export async function syncAnalytics(req: Request, res: Response, next: NextFunct
 }
 
 /**
- * Calculate tiered marginal commission
- * Tiers:
- * 0 - 10,000: 0%
- * 10,000 - 13,000: 5%
- * 13,000 - 16,000: 10%
- * 16,000+: 15%
+ * Calculate tiered marginal commission dynamically
  */
-function calculateCommission(sales: number): number {
+function calculateCommission(sales: number, tiers: Array<{ threshold: number; rate: number }>): number {
+  if (sales <= 0 || !tiers || tiers.length === 0) return 0;
+
+  // Ensure tiers are sorted by threshold ascending
+  const sortedTiers = [...tiers].sort((a, b) => a.threshold - b.threshold);
   let commission = 0;
 
-  if (sales <= 10000) return 0;
+  for (let i = 0; i < sortedTiers.length; i++) {
+    const currentTier = sortedTiers[i];
+    const nextTier = sortedTiers[i + 1]; // may be undefined
 
-  // Tier 1: 10k - 13k (max 3000)
-  const t1Sales = Math.min(sales - 10000, 3000);
-  commission += t1Sales * 0.05;
+    if (sales > currentTier.threshold) {
+      let salesInThisTier = sales - currentTier.threshold;
 
-  if (sales <= 13000) return commission;
+      if (nextTier) {
+        // We only calculate up to the start of the next tier
+        const maxSalesThisTier = nextTier.threshold - currentTier.threshold;
+        salesInThisTier = Math.min(salesInThisTier, maxSalesThisTier);
+      }
 
-  // Tier 2: 13k - 16k (max 3000)
-  const t2Sales = Math.min(sales - 13000, 3000);
-  commission += t2Sales * 0.10;
-
-  if (sales <= 16000) return commission;
-
-  // Tier 3: 16k+
-  const t3Sales = sales - 16000;
-  commission += t3Sales * 0.15;
+      commission += salesInThisTier * (currentTier.rate / 100);
+    }
+  }
 
   return Math.round(commission * 100) / 100;
 }
@@ -259,6 +257,14 @@ export async function getSalesByResponsible(req: AuthRequest, res: Response, nex
       }
     }
 
+    // Fetch GoalSettings to calculate dynamic commissions
+    const settings = await models.goalSettings.findOne({ key: "global" }).lean();
+    const commissionTiers = settings?.commissionTiers ?? [
+      { threshold: 0, rate: 2 },
+      { threshold: 10000, rate: 3 },
+      { threshold: 13000, rate: 6 }
+    ];
+
     const stats = await models.orders.aggregate([
       {
         $match: orderMatch
@@ -286,7 +292,7 @@ export async function getSalesByResponsible(req: AuthRequest, res: Response, nex
         role = 'Comercial'; // Known sales reps
       }
 
-      const commission = calculateCommission(s.totalSales);
+      const commission = calculateCommission(s.totalSales, commissionTiers as Array<{ threshold: number; rate: number }>);
 
       return {
         ...s,
@@ -305,6 +311,7 @@ export async function getSalesByResponsible(req: AuthRequest, res: Response, nex
         to: endDate.toLocaleDateString("es-EC", { timeZone: "America/Guayaquil" })
       },
       monthlyGoal: 10000 * Math.max(1, activeSalespeopleCount),
+      commissionTiers,
       stats: enhancedStats
     });
     return;

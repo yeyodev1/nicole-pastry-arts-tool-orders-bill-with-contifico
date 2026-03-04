@@ -12,7 +12,8 @@ import DeliveryPersonRouter from "./delivery-person.router";
 import ProviderRouter from "./provider.router";
 import RawMaterialRouter from "./raw-material.router";
 import SupplierOrderRouter from "./supplier-order.router";
-
+import GoalSettingsRouter from "./goal-settings.router";
+import ProductionSettingsRouter from "./production-settings.router";
 
 import { WarehouseRouter } from "./warehouse.routes";
 
@@ -32,6 +33,8 @@ function routerApi(app: Application) {
   router.use("/providers", ProviderRouter);
   router.use("/raw-materials", RawMaterialRouter);
   router.use("/supplier-orders", SupplierOrderRouter);
+  router.use("/settings/goals", GoalSettingsRouter);
+  router.use("/settings/production", ProductionSettingsRouter);
 
   router.use("/warehouse", WarehouseRouter);
 }
