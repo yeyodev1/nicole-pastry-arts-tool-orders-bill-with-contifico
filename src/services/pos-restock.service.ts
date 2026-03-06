@@ -6,6 +6,13 @@ import { IPOSDailyEntry } from "../models/pos-daily-entry.model";
 // Day-of-week index (getUTCDay) → objectives key
 const DOW_KEYS: (keyof WeeklyObjectives)[] = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
 
+// Case-insensitive branch matcher to tolerate name inconsistencies in the DB
+// e.g. "Mall del sol" === "Mall del Sol"
+function branchMatch(branch: string): RegExp {
+  const escaped = branch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`^${escaped}$`, "i");
+}
+
 function getObjectiveForDow(objectives: WeeklyObjectives, dowIndex: number): number {
   return objectives[DOW_KEYS[dowIndex]] ?? 0;
 }
@@ -24,7 +31,7 @@ export class POSRestockService {
    * Get all stock objectives for a branch.
    */
   async getObjectives(branch: string): Promise<IPOSStockObjective[]> {
-    return models.posStockObjectives.find({ branch }) as any;
+    return models.posStockObjectives.find({ branch: branchMatch(branch) }) as any;
   }
 
   /**
@@ -67,11 +74,11 @@ export class POSRestockService {
     const targetDow = targetDate.getUTCDay();
 
     // All objectives for this branch
-    const objectives = await models.posStockObjectives.find({ branch }).lean();
+    const objectives = await models.posStockObjectives.find({ branch: branchMatch(branch) }).lean();
 
     // Most recent entry for this branch on or before formDate
     const lastEntry = await models.posDailyEntries
-      .findOne({ branch, date: { $lte: formDate } })
+      .findOne({ branch: branchMatch(branch), date: { $lte: formDate } })
       .sort({ date: -1 })
       .lean();
 
@@ -79,7 +86,7 @@ export class POSRestockService {
     const lastEntryDateStr = lastEntry ? toDateStr(lastEntry.date) : null;
 
     // Also fetch today's losses if any to support full state restoration (editability)
-    const todayLosses = await models.posLosses.find({ branch, date: formDate }).lean();
+    const todayLosses = await models.posLosses.find({ branch: branchMatch(branch), date: formDate }).lean();
     const lossesByProduct: Record<string, any[]> = {};
     for (const loss of todayLosses) {
       if (!lossesByProduct[loss.productName]) lossesByProduct[loss.productName] = [];
@@ -141,7 +148,7 @@ export class POSRestockService {
     // Upcoming orders: deliveryDate >= targetDate, status not DELIVERED
     const upcomingOrderDocs = await models.orders
       .find({
-        branch,
+        branch: branchMatch(branch),
         deliveryDate: { $gte: targetDate },
         status: { $nin: ["DELIVERED"] },
       })
@@ -208,7 +215,7 @@ export class POSRestockService {
     const targetDow = targetDate.getUTCDay();
 
     // Build objective lookup map
-    const objectives = await models.posStockObjectives.find({ branch }).lean();
+    const objectives = await models.posStockObjectives.find({ branch: branchMatch(branch) }).lean();
     const objectiveMap: Record<string, any> = {};
     for (const obj of objectives as any[]) {
       objectiveMap[obj.productName] = obj;
@@ -434,7 +441,7 @@ export class POSRestockService {
    * Delete a stock objective by branch and product name.
    */
   async deleteObjective(branch: string, productName: string): Promise<boolean> {
-    const result = await models.posStockObjectives.deleteOne({ branch, productName });
+    const result = await models.posStockObjectives.deleteOne({ branch: branchMatch(branch), productName });
     return result.deletedCount > 0;
   }
 }
