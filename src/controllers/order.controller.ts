@@ -750,8 +750,24 @@ export async function generateInvoice(req: AuthRequest, res: Response, next: Nex
     const invoiceResponse = await contificoService.createInvoice(order);
 
     if (invoiceResponse.error) {
-      const msg = typeof invoiceResponse.error === 'object' ? JSON.stringify(invoiceResponse.error) : String(invoiceResponse.error);
-      throw new Error(msg);
+      // Extract human-readable message from Contifico's error response
+      let contificoMensaje = '';
+      const rawError = invoiceResponse.error;
+
+      if (typeof rawError === 'object' && rawError !== null) {
+        contificoMensaje = rawError.mensaje || JSON.stringify(rawError);
+      } else if (typeof rawError === 'string') {
+        try {
+          const parsed = JSON.parse(rawError);
+          contificoMensaje = parsed.mensaje || rawError;
+        } catch {
+          contificoMensaje = rawError;
+        }
+      }
+
+      const err = new Error(contificoMensaje) as any;
+      err.isContificoError = true;
+      throw err;
     }
 
     // Update Order
@@ -790,8 +806,13 @@ export async function generateInvoice(req: AuthRequest, res: Response, next: Nex
       await models.orders.findByIdAndUpdate(req.params.id, { invoiceStatus: 'ERROR' });
     } catch (e) { }
 
+    const contificoMessage = error.isContificoError ? error.message : null;
+
     res.status(HttpStatusCode.InternalServerError).send({
-      message: "Failed to generate invoice.",
+      message: contificoMessage
+        ? `Error de Contífico: ${contificoMessage}`
+        : "Error al generar la factura.",
+      contificoMessage: contificoMessage || null,
       error: error.message || String(error)
     });
     return;
