@@ -10,7 +10,7 @@ export class POSService {
   async getIncomingDispatches(branch?: string, filters: any = {}) {
     const query: any = {};
     if (branch && branch !== 'Todas las sucursales') {
-      query.branch = branch;
+      query.branch = { $regex: new RegExp(`^${branch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') };
     }
 
     // --- Search Filter ---
@@ -72,7 +72,7 @@ export class POSService {
   async registerReception(orderId: string, dispatchId: string, receptionData: {
     receivedBy: string,
     receptionNotes?: string,
-    items: { productId: string, quantityReceived: number, itemStatus: string }[]
+    items: { productId: string, quantityReceived: number, itemStatus: string, itemNote?: string }[]
   }) {
 
     if (!Types.ObjectId.isValid(orderId) || !Types.ObjectId.isValid(dispatchId)) {
@@ -101,7 +101,8 @@ export class POSService {
 
         if (itemInDispatch) {
           itemInDispatch.quantityReceived = receivedItem.quantityReceived;
-          itemInDispatch.itemStatus = receivedItem.itemStatus as "OK" | "MISSING" | "DAMAGED";
+          itemInDispatch.itemStatus = receivedItem.itemStatus as "OK" | "MISSING" | "DAMAGED" | "BAD_CONDITION";
+          if (receivedItem.itemNote !== undefined) itemInDispatch.itemNote = receivedItem.itemNote;
 
           if (
             itemInDispatch.itemStatus !== 'OK' ||
@@ -126,7 +127,7 @@ export class POSService {
   async getPickupOrders(branch?: string, filters: any = {}) {
     const query: any = {};
     if (branch && branch !== 'Todas las sucursales') {
-      query.branch = branch;
+      query.branch = { $regex: new RegExp(`^${branch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') };
     }
 
     if (filters.search) {

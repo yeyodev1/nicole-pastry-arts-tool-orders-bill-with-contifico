@@ -17,7 +17,8 @@ export interface IDispatchItem {
   name: string;
   quantitySent: number;
   quantityReceived?: number;
-  itemStatus?: "OK" | "MISSING" | "DAMAGED";
+  itemStatus?: "OK" | "MISSING" | "DAMAGED" | "BAD_CONDITION";
+  itemNote?: string;
 }
 
 export interface IDispatch {
@@ -114,7 +115,8 @@ const DispatchSchema = new Schema<IDispatch>({
       name: { type: String },
       quantitySent: { type: Number, required: true },
       quantityReceived: { type: Number },
-      itemStatus: { type: String, enum: ["OK", "MISSING", "DAMAGED"], default: "OK" }
+      itemStatus: { type: String, enum: ["OK", "MISSING", "DAMAGED", "BAD_CONDITION"], default: "OK" },
+      itemNote: { type: String }
     }
   ],
   notes: { type: String },

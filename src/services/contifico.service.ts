@@ -167,9 +167,13 @@ export class ContificoService {
       const rawId = (orderData.invoiceData.ruc || "").trim();
       const isCedula = rawId.length === 10;
 
+      // In Ecuador, a natural person's RUC is their 10-digit cedula + "001".
+      // Contifico requires a 13-digit ruc field on invoices even for natural persons.
+      const computedRuc = isCedula ? rawId + "001" : rawId;
+
       const clientePayload = {
         razon_social: orderData.invoiceData.businessName,
-        ruc: isCedula ? "" : rawId,
+        ruc: computedRuc,
         cedula: isCedula ? rawId : "",
         email: orderData.invoiceData.email,
         direccion: orderData.invoiceData.address,
