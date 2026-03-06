@@ -239,7 +239,9 @@ export class ContificoService {
       return response.data;
     } catch (error: any) {
       console.error("❌ Error fetching products from Contífico:", error.response?.data || error.message);
-      throw new Error("Failed to fetch products from Contífico");
+      const err = new Error("Failed to fetch products from Contífico") as any;
+      err.contificoStatus = error.response?.status ?? null;
+      throw err;
     }
   }
 

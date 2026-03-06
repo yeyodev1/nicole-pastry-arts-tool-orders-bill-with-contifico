@@ -20,8 +20,17 @@ export async function getProducts(req: Request, res: Response, next: NextFunctio
 
     res.status(200).send(products);
     return;
-  } catch (error) {
+  } catch (error: any) {
     console.error("❌ Error in getProducts:", error);
+    const isContificoDown = error?.message?.includes("Contífico") || error?.contificoStatus;
+    if (isContificoDown) {
+      res.status(503).send({
+        message: "Contífico no está disponible en este momento. Intenta de nuevo en unos minutos.",
+        error: "contifico_unavailable",
+        contificoStatus: error?.contificoStatus ?? null
+      });
+      return;
+    }
     res.status(500).send({
       message: "Internal server error occurred while fetching products.",
       error: error instanceof Error ? error.message : String(error)
