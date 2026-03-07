@@ -4,8 +4,12 @@ import { models } from "../models";
 
 export async function getCategories(req: Request, res: Response, next: NextFunction) {
   try {
-    const categories = await models.providerCategories.find({ isActive: true }).sort({ name: 1 });
-    res.status(HttpStatusCode.Ok).send({ message: "Categories retrieved.", data: categories });
+    const categories = await models.providerCategories.find({ isActive: true }).sort({ name: 1 }).lean();
+    const withCounts = await Promise.all(categories.map(async (cat) => {
+      const materialCount = await models.rawMaterials.countDocuments({ category: cat.name });
+      return { ...cat, materialCount };
+    }));
+    res.status(HttpStatusCode.Ok).send({ message: "Categories retrieved.", data: withCounts });
   } catch (error) {
     next(error);
   }
