@@ -10,6 +10,9 @@ router.post("/", authMiddleware as any, OrderController.createOrder);
 // GET /api/orders
 router.get("/", authMiddleware as any, OrderController.getOrders);
 
+// GET /api/orders/invoice-status
+router.get("/invoice-status", authMiddleware as any, OrderController.getInvoiceStatus);
+
 // GET /api/orders/reports/delivery
 router.get("/reports/delivery", OrderController.getDeliveryReport);
 

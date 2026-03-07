@@ -1,59 +1,92 @@
 name: Batch Invoice Processing
 
 on:
-    push:
-        branches:
-            - develop
     schedule:
-        # Run at 23:59 America/Guayaquil (UTC-5)
-        # Cron matches UTC time. 23:59 UTC-5 is 04:59 UTC next day.
-        # So we run it at 04:59 UTC.
-        - cron: "59 4 * * *"
-    workflow_dispatch: # Allow manual triggering
+        # 23:00 Ecuador (UTC-5) = 04:00 UTC — primera pasada
+        - cron: "0 4 * * *"
+        # 23:30 Ecuador = 04:30 UTC — segunda pasada (por si quedaron pendientes)
+        - cron: "30 4 * * *"
+        # 23:55 Ecuador = 04:55 UTC — pasada final
+        - cron: "55 4 * * *"
+    workflow_dispatch:
+        inputs:
+            environment:
+                description: "Entorno a procesar"
+                required: true
+                default: "production"
+                type: choice
+                options:
+                    - production
+                    - testing
 
 jobs:
     process-invoices:
         runs-on: ubuntu-latest
         steps:
-            - name: Trigger Batch Invoice Endpoint Loop
+            - name: Seleccionar entorno
+              id: env
               run: |
-                  # Select API URL based on branch/environment
-                  if [[ "${{ github.ref_name }}" == 'develop' ]]; then
-                     echo "🧪 TESTING MODE DETECTED (Branch: develop)"
-                     # You must add this secret in GitHub: API_BASE_URL_TESTING
-                     TARGET_URL="${{ secrets.API_BASE_URL_TESTING }}"
+                  if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ github.event.inputs.environment }}" == "testing" ]]; then
+                      echo "TARGET_URL=${{ secrets.API_BASE_URL_TESTING }}" >> $GITHUB_ENV
+                      echo "ENV_LABEL=TESTING" >> $GITHUB_ENV
                   else
-                     echo "🚀 PRODUCTION MODE DETECTED"
-                     TARGET_URL="${{ secrets.API_BASE_URL }}"
+                      echo "TARGET_URL=${{ secrets.API_BASE_URL }}" >> $GITHUB_ENV
+                      echo "ENV_LABEL=PRODUCTION" >> $GITHUB_ENV
                   fi
 
+            - name: Validar URL
+              run: |
                   if [ -z "$TARGET_URL" ]; then
-                    echo "❌ Error: Target URL is not defined. Check your Secrets."
-                    exit 1
+                      echo "❌ Error: TARGET_URL no está definida. Verifica los Secrets de GitHub."
+                      exit 1
                   fi
+                  echo "✅ Entorno: $ENV_LABEL — URL: $TARGET_URL"
 
-                  echo "Starting Batch Invoice Loop..."
+            - name: Procesar facturas pendientes (loop hasta vaciar)
+              run: |
+                  echo "🔄 Iniciando procesamiento de facturas pendientes..."
                   REMAINING=1
+                  BATCH_NUM=0
+                  MAX_BATCHES=30
 
-                  while [ "$REMAINING" -gt 0 ]; do
-                    echo "Calling batch endpoint..."
-                    RESPONSE=$(curl -s -X POST "$TARGET_URL/api/orders/batch-invoice" \
-                      -H "Content-Type: application/json" \
-                      -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
-                      -H "ngrok-skip-browser-warning: true")
-                    
-                    echo "Response: $RESPONSE"
-                    
-                    # Extract remaining count using grep/sed (avoiding jq dependency if not present, though ubuntu has it usually)
-                    # Assuming JSON format {"remaining": 5, ...}
-                    REMAINING=$(echo $RESPONSE | jq '.remaining // 0')
-                    
-                    echo "Remaining pending invoices: $REMAINING"
-                    
-                    if [ "$REMAINING" -gt 0 ]; then
-                       echo "Waiting 5 seconds before next batch..."
-                       sleep 5
-                    fi
+                  while [ "$REMAINING" -gt 0 ] && [ "$BATCH_NUM" -lt "$MAX_BATCHES" ]; do
+                      BATCH_NUM=$((BATCH_NUM + 1))
+                      echo ""
+                      echo "--- Batch #$BATCH_NUM ---"
+
+                      RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$TARGET_URL/api/orders/batch-invoice" \
+                          -H "Content-Type: application/json" \
+                          -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+                          -H "ngrok-skip-browser-warning: true" \
+                          --max-time 60)
+
+                      HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+                      BODY=$(echo "$RESPONSE" | head -n -1)
+
+                      echo "HTTP Status: $HTTP_CODE"
+                      echo "Respuesta: $BODY"
+
+                      if [ "$HTTP_CODE" != "200" ]; then
+                          echo "❌ Error HTTP $HTTP_CODE — deteniendo loop."
+                          exit 1
+                      fi
+
+                      REMAINING=$(echo "$BODY" | jq '.remaining // 0')
+                      PROCESSED=$(echo "$BODY" | jq '.results.processed // 0')
+                      FAILED=$(echo "$BODY" | jq '.results.failed // 0')
+
+                      echo "✅ Procesadas: $PROCESSED | ❌ Fallidas: $FAILED | 🕐 Restantes: $REMAINING"
+
+                      if [ "$REMAINING" -gt 0 ]; then
+                          echo "⏳ Esperando 5 segundos antes del siguiente batch..."
+                          sleep 5
+                      fi
                   done
 
-                  echo "All batches processed successfully."
+                  if [ "$BATCH_NUM" -ge "$MAX_BATCHES" ]; then
+                      echo "⚠️ Se alcanzó el límite de $MAX_BATCHES batches. Verificar si hay órdenes atascadas."
+                      exit 1
+                  fi
+
+                  echo ""
+                  echo "✅ Todos los batches procesados exitosamente ($BATCH_NUM batch(es) ejecutados)."

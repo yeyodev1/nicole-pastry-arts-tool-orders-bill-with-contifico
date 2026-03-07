@@ -335,20 +335,50 @@ export async function getOrderById(req: AuthRequest, res: Response, next: NextFu
 }
 
 /**
- * Process all pending invoices for the day
- * This should be called by a CRON job at 11:59 PM
+ * Get invoice processing status (counts of pending and error orders)
+ * GET /api/orders/invoice-status
+ */
+export async function getInvoiceStatus(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    const [pending, error, processed] = await Promise.all([
+      models.orders.countDocuments({ invoiceNeeded: true, invoiceStatus: "PENDING" }),
+      models.orders.countDocuments({ invoiceNeeded: true, invoiceStatus: "ERROR" }),
+      models.orders.countDocuments({ invoiceStatus: "PROCESSED" }),
+    ]);
+
+    res.status(HttpStatusCode.Ok).send({ pending, error, processed });
+    return;
+  } catch (err) {
+    res.status(HttpStatusCode.InternalServerError).send({ message: "Error fetching invoice status" });
+    return;
+  }
+}
+
+/**
+ * Process all pending (and errored) invoices
+ * Called by GitHub Actions cron — protected by CRON_SECRET
  */
 export async function processPendingInvoices(req: AuthRequest, res: Response, next: NextFunction) {
   try {
+    // ── Auth: validate CRON_SECRET ──────────────────────────────────────────
+    const cronSecret = process.env.CRON_SECRET;
+    if (cronSecret) {
+      const authHeader = req.headers["authorization"] || "";
+      const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
+      if (token !== cronSecret) {
+        res.status(HttpStatusCode.Unauthorized).send({ message: "Unauthorized." });
+        return;
+      }
+    }
 
-    // Find all orders with invoiceNeeded: true AND invoiceStatus: 'PENDING'
-    // BATCH LIMIT: Process 5 at a time to avoid Vercel Timeouts (10s limit on free tier)
+    // ── Batch config ────────────────────────────────────────────────────────
+    // Process PENDING first, then ERROR (retries). 5 orders per batch.
     const BATCH_SIZE = 5;
 
-    // Check total pending count first
+    // Count actionable orders: PENDING + ERROR
     const totalPending = await models.orders.countDocuments({
       invoiceNeeded: true,
-      invoiceStatus: "PENDING"
+      invoiceStatus: { $in: ["PENDING", "ERROR"] }
     });
 
     if (totalPending === 0) {
@@ -356,10 +386,13 @@ export async function processPendingInvoices(req: AuthRequest, res: Response, ne
       return;
     }
 
+    // PENDING orders take priority over ERROR retries
     const pendingOrders = await models.orders.find({
       invoiceNeeded: true,
-      invoiceStatus: "PENDING"
-    }).limit(BATCH_SIZE);
+      invoiceStatus: { $in: ["PENDING", "ERROR"] }
+    })
+      .sort({ invoiceStatus: -1 }) // "PENDING" > "ERROR" alphabetically → PENDING first
+      .limit(BATCH_SIZE);
 
 
     const results = {
@@ -387,8 +420,7 @@ export async function processPendingInvoices(req: AuthRequest, res: Response, ne
         }
 
         order.invoiceStatus = "PROCESSED";
-        order.invoiceInfo = invoiceResponse; // Save the invoice details
-        order.invoiceInfo = invoiceResponse; // Save the invoice details
+        order.invoiceInfo = invoiceResponse;
         await order.save();
 
         // 3.1 Trigger SRI Authorization (Manual Trigger Feature)
@@ -434,11 +466,16 @@ export async function processPendingInvoices(req: AuthRequest, res: Response, ne
       }
     }
 
-    // Calculate remaining (approximate)
-    const remaining = Math.max(0, totalPending - pendingOrders.length);
+    // Re-count remaining after processing (accurate for loop control)
+    const remaining = await models.orders.countDocuments({
+      invoiceNeeded: true,
+      invoiceStatus: { $in: ["PENDING", "ERROR"] }
+    });
+
+    console.log(`[batch-invoice] Batch done. Processed: ${results.processed}, Failed: ${results.failed}, Remaining: ${remaining}`);
 
     res.status(HttpStatusCode.Ok).send({
-      message: `Batch processed. ${remaining} pending invoices remaining.`,
+      message: `Batch processed. ${remaining} invoices remaining.`,
       results,
       remaining,
       totalPending
