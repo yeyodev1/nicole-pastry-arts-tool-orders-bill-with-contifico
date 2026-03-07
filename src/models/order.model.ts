@@ -17,7 +17,8 @@ export interface IDispatchItem {
   name: string;
   quantitySent: number;
   quantityReceived?: number;
-  itemStatus?: "OK" | "MISSING" | "DAMAGED";
+  itemStatus?: "OK" | "MISSING" | "DAMAGED" | "BAD_CONDITION";
+  itemNote?: string;
 }
 
 export interface IDispatch {
@@ -50,7 +51,7 @@ export interface IOrder extends Document {
   salesChannel: string;
   products: IOrderProduct[];
   deliveryType: "delivery" | "retiro";
-  branch?: "San Marino" | "Mall del Sol" | "Centro de Producción";
+  branch?: string;
   googleMapsLink?: string;
   deliveryAddress?: string;
   totalValue: number;
@@ -66,6 +67,7 @@ export interface IOrder extends Document {
     address: string;
   };
   invoiceStatus?: "PENDING" | "PROCESSED" | "ERROR";
+  invoiceError?: string;
   invoiceInfo?: any;
   productionStage: "PENDING" | "IN_PROCESS" | "FINISHED" | "DELAYED" | "VOID";
   productionNotes: string;
@@ -114,7 +116,8 @@ const DispatchSchema = new Schema<IDispatch>({
       name: { type: String },
       quantitySent: { type: Number, required: true },
       quantityReceived: { type: Number },
-      itemStatus: { type: String, enum: ["OK", "MISSING", "DAMAGED"], default: "OK" }
+      itemStatus: { type: String, enum: ["OK", "MISSING", "DAMAGED", "BAD_CONDITION"], default: "OK" },
+      itemNote: { type: String }
     }
   ],
   notes: { type: String },
@@ -167,7 +170,6 @@ const OrderSchema = new Schema<IOrder>(
     },
     branch: {
       type: String,
-      enum: ["San Marino", "Mall del Sol", "Centro de Producción"],
       required: false
     },
     googleMapsLink: { type: String },
@@ -181,6 +183,7 @@ const OrderSchema = new Schema<IOrder>(
       enum: ["PENDING", "PROCESSED", "ERROR"],
       default: undefined,
     },
+    invoiceError: { type: String, default: undefined },
     responsible: {
       type: String,
       required: true,

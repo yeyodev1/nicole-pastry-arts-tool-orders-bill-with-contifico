@@ -6,6 +6,13 @@ import { IPOSDailyEntry } from "../models/pos-daily-entry.model";
 // Day-of-week index (getUTCDay) → objectives key
 const DOW_KEYS: (keyof WeeklyObjectives)[] = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
 
+// Case-insensitive branch matcher to tolerate name inconsistencies in the DB
+// e.g. "Mall del sol" === "Mall del Sol"
+function branchMatch(branch: string): RegExp {
+  const escaped = branch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`^${escaped}$`, "i");
+}
+
 function getObjectiveForDow(objectives: WeeklyObjectives, dowIndex: number): number {
   return objectives[DOW_KEYS[dowIndex]] ?? 0;
 }
@@ -24,7 +31,7 @@ export class POSRestockService {
    * Get all stock objectives for a branch.
    */
   async getObjectives(branch: string): Promise<IPOSStockObjective[]> {
-    return models.posStockObjectives.find({ branch }) as any;
+    return models.posStockObjectives.find({ branch: branchMatch(branch) }) as any;
   }
 
   /**
@@ -67,11 +74,11 @@ export class POSRestockService {
     const targetDow = targetDate.getUTCDay();
 
     // All objectives for this branch
-    const objectives = await models.posStockObjectives.find({ branch }).lean();
+    const objectives = await models.posStockObjectives.find({ branch: branchMatch(branch) }).lean();
 
     // Most recent entry for this branch on or before formDate
     const lastEntry = await models.posDailyEntries
-      .findOne({ branch, date: { $lte: formDate } })
+      .findOne({ branch: branchMatch(branch), date: { $lte: formDate } })
       .sort({ date: -1 })
       .lean();
 
@@ -79,7 +86,7 @@ export class POSRestockService {
     const lastEntryDateStr = lastEntry ? toDateStr(lastEntry.date) : null;
 
     // Also fetch today's losses if any to support full state restoration (editability)
-    const todayLosses = await models.posLosses.find({ branch, date: formDate }).lean();
+    const todayLosses = await models.posLosses.find({ branch: branchMatch(branch), date: formDate }).lean();
     const lossesByProduct: Record<string, any[]> = {};
     for (const loss of todayLosses) {
       if (!lossesByProduct[loss.productName]) lossesByProduct[loss.productName] = [];
@@ -120,6 +127,7 @@ export class POSRestockService {
           stockFinal: found.stockFinal,
           bajas: found.bajas,
           pedidoSugerido: found.pedidoSugerido,
+          pedidoFinal: found.pedidoFinal,
           date: lastEntryDateStr,
           // Include detailed losses only if it matches today's entry
           detailedLosses: isToday ? (lossesByProduct[obj.productName] || []) : []
@@ -141,7 +149,7 @@ export class POSRestockService {
     // Upcoming orders: deliveryDate >= targetDate, status not DELIVERED
     const upcomingOrderDocs = await models.orders
       .find({
-        branch,
+        branch: branchMatch(branch),
         deliveryDate: { $gte: targetDate },
         status: { $nin: ["DELIVERED"] },
       })
@@ -192,6 +200,7 @@ export class POSRestockService {
       bajasNote?: string;
       stockFinal: number;
       pedidoFinal?: number;
+      deliveryRounds?: Array<{ label: string; quantity: number }>;
       detailedLosses?: Array<{
         quantity: number;
         reason: string;
@@ -207,7 +216,7 @@ export class POSRestockService {
     const targetDow = targetDate.getUTCDay();
 
     // Build objective lookup map
-    const objectives = await models.posStockObjectives.find({ branch }).lean();
+    const objectives = await models.posStockObjectives.find({ branch: branchMatch(branch) }).lean();
     const objectiveMap: Record<string, any> = {};
     for (const obj of objectives as any[]) {
       objectiveMap[obj.productName] = obj;
@@ -263,6 +272,7 @@ export class POSRestockService {
         stockObjectiveTomorrow,
         pedidoSugerido,
         pedidoFinal,
+        deliveryRounds: item.deliveryRounds || [],
       };
     });
 
@@ -284,51 +294,131 @@ export class POSRestockService {
     // 3. Sync with Production/Bodega (Order model)
     const restockItems = processedItems.filter(i => i.pedidoFinal > 0);
 
-    // Categories to split by
-    const categories: ("Producción" | "Bodega")[] = ["Producción", "Bodega"];
+    // Check if any item has delivery rounds
+    const hasDeliveryRounds = restockItems.some(
+      (i) => i.deliveryRounds && i.deliveryRounds.length > 0
+    );
 
-    for (const cat of categories) {
-      const catItems = restockItems.filter(i => i.category === cat);
-      const salesChannelLabel = cat === "Bodega" ? "Restock-Bodega" : "Restock";
-      const customerNamePrefix = cat === "Bodega" ? "REPOSICIÓN BODEGA" : "REPOSICIÓN";
+    if (hasDeliveryRounds) {
+      // --- Round-based sync: one Order per unique round label ---
+      // Collect all unique round labels
+      const roundLabels = new Set<string>();
+      for (const item of restockItems) {
+        if (item.deliveryRounds && item.deliveryRounds.length > 0) {
+          for (const round of item.deliveryRounds) {
+            roundLabels.add(round.label);
+          }
+        }
+      }
 
-      if (catItems.length === 0) {
-        // If no items for this category, remove any existing restock order for this branch/date/category
-        await models.orders.deleteOne({
-          branch,
-          deliveryDate: targetDate,
-          salesChannel: salesChannelLabel
-        });
-      } else {
-        // Upsert a "Restock Order" for this category
-        const restockOrderData = {
-          branch,
-          deliveryDate: targetDate,
-          orderDate: date,
-          customerName: `${customerNamePrefix}: ${branch}`,
-          customerPhone: "N/A",
-          salesChannel: salesChannelLabel,
-          deliveryType: "retiro",
-          totalValue: 0,
-          paymentMethod: "Interno",
-          responsible: "Web",
-          invoiceNeeded: false,
-          productionStage: "PENDING",
-          products: catItems.map(item => ({
-            name: item.productName,
-            quantity: item.pedidoFinal,
-            price: 0,
-            contifico_id: objectiveMap[item.productName]?.contificoId,
-            productionStatus: "PENDING",
-            produced: 0
-          }))
-        };
+      // Delete old restock orders for this branch/date (both categories)
+      await models.orders.deleteMany({
+        branch,
+        deliveryDate: targetDate,
+        salesChannel: { $in: ["Restock", "Restock-Bodega"] },
+      });
 
-        await models.orders.findOneAndUpdate(
-          { branch, deliveryDate: targetDate, salesChannel: salesChannelLabel },
-          { $set: restockOrderData },
-          { upsert: true, new: true }
-        );
+      // Create one Order per round label
+      for (const roundLabel of roundLabels) {
+        // Gather items for this round across both categories
+        const categories: ("Producción" | "Bodega")[] = ["Producción", "Bodega"];
+
+        for (const cat of categories) {
+          const salesChannelLabel = cat === "Bodega" ? "Restock-Bodega" : "Restock";
+          const customerNamePrefix = cat === "Bodega" ? "REPOSICIÓN BODEGA" : "REPOSICIÓN";
+
+          const roundItems = restockItems
+            .filter((i) => i.category === cat)
+            .map((item) => {
+              const round = (item.deliveryRounds || []).find(
+                (r) => r.label === roundLabel
+              );
+              return round && round.quantity > 0
+                ? { ...item, roundQuantity: round.quantity }
+                : null;
+            })
+            .filter(Boolean) as Array<(typeof restockItems)[0] & { roundQuantity: number }>;
+
+          if (roundItems.length === 0) continue;
+
+          const restockOrderData = {
+            branch,
+            deliveryDate: targetDate,
+            orderDate: date,
+            customerName: `${customerNamePrefix}: ${branch}`,
+            customerPhone: "N/A",
+            salesChannel: salesChannelLabel,
+            deliveryType: "retiro",
+            totalValue: 0,
+            paymentMethod: "Interno",
+            responsible: "Web",
+            invoiceNeeded: false,
+            productionStage: "PENDING",
+            comments: roundLabel,
+            products: roundItems.map((item) => ({
+              name: item.productName,
+              quantity: item.roundQuantity,
+              price: 0,
+              contifico_id: objectiveMap[item.productName]?.contificoId,
+              productionStatus: "PENDING",
+              produced: 0,
+            })),
+          };
+
+          await models.orders.create(restockOrderData);
+        }
+      }
+    } else {
+      // --- Legacy: one Order per category (no rounds) ---
+      const categories: ("Producción" | "Bodega")[] = ["Producción", "Bodega"];
+
+      for (const cat of categories) {
+        const catItems = restockItems.filter((i) => i.category === cat);
+        const salesChannelLabel =
+          cat === "Bodega" ? "Restock-Bodega" : "Restock";
+        const customerNamePrefix =
+          cat === "Bodega" ? "REPOSICIÓN BODEGA" : "REPOSICIÓN";
+
+        if (catItems.length === 0) {
+          await models.orders.deleteOne({
+            branch,
+            deliveryDate: targetDate,
+            salesChannel: salesChannelLabel,
+          });
+        } else {
+          const restockOrderData = {
+            branch,
+            deliveryDate: targetDate,
+            orderDate: date,
+            customerName: `${customerNamePrefix}: ${branch}`,
+            customerPhone: "N/A",
+            salesChannel: salesChannelLabel,
+            deliveryType: "retiro",
+            totalValue: 0,
+            paymentMethod: "Interno",
+            responsible: "Web",
+            invoiceNeeded: false,
+            productionStage: "PENDING",
+            products: catItems.map((item) => ({
+              name: item.productName,
+              quantity: item.pedidoFinal,
+              price: 0,
+              contifico_id: objectiveMap[item.productName]?.contificoId,
+              productionStatus: "PENDING",
+              produced: 0,
+            })),
+          };
+
+          await models.orders.findOneAndUpdate(
+            {
+              branch,
+              deliveryDate: targetDate,
+              salesChannel: salesChannelLabel,
+            },
+            { $set: restockOrderData },
+            { upsert: true, new: true }
+          );
+        }
       }
     }
 
@@ -352,7 +442,7 @@ export class POSRestockService {
    * Delete a stock objective by branch and product name.
    */
   async deleteObjective(branch: string, productName: string): Promise<boolean> {
-    const result = await models.posStockObjectives.deleteOne({ branch, productName });
+    const result = await models.posStockObjectives.deleteOne({ branch: branchMatch(branch), productName });
     return result.deletedCount > 0;
   }
 }

@@ -51,14 +51,17 @@ export class UserService {
    * Find user by email
    */
   async findByEmail(email: string) {
-    return await models.users.findOne({ email });
+    return await models.users.findOne({ email }).select('-password').lean();
   }
 
   /**
    * Get all users
    */
-  async findAll() {
-    return await models.users.find();
+  async findAll(roleFilter?: string[]) {
+    const query = roleFilter && roleFilter.length > 0
+      ? { role: { $in: roleFilter } }
+      : {};
+    return await models.users.find(query).select('-password').lean();
   }
 
   /**

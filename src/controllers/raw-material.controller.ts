@@ -5,18 +5,19 @@ import { models } from "../models";
 export async function getRawMaterials(req: Request, res: Response, next: NextFunction) {
   try {
     let query: any = {};
-    const { search } = req.query;
+    const { search, provider, category } = req.query;
 
     if (search) {
       const searchRegex = new RegExp(String(search), 'i');
-      query = {
-        $or: [
-          { name: searchRegex },
-          { code: searchRegex },
-          { item: searchRegex }
-        ]
-      };
+      query.$or = [
+        { name: searchRegex },
+        { code: searchRegex },
+        { item: searchRegex }
+      ];
     }
+
+    if (provider) query.provider = provider;
+    if (category) query.category = String(category);
 
     const materials = await models.rawMaterials.find(query).populate('provider').sort({ name: 1 });
     res.status(HttpStatusCode.Ok).send({

@@ -11,9 +11,16 @@ export async function createUser(
 ) {
   try {
     const user = await userService.createUser(req.body);
-    res.status(201).send(user);
+    res.status(201).send({
+      message: "User created successfully.",
+      data: user
+    });
     return;
-  } catch (error) {
+  } catch (error: any) {
+    if (error.code === 11000) {
+      res.status(409).send({ message: "EMAIL_ALREADY_REGISTERED" });
+      return;
+    }
     next(error);
   }
 }
@@ -24,23 +31,26 @@ export async function getAllUsers(
   next: NextFunction
 ) {
   try {
-    const currentUser = req.user;
-    let users = await userService.findAll();
+    const jwtUser = req.user;
 
-    // Data isolation for Sales Manager
-    if (currentUser?.role === "SALES_MANAGER") {
-      users = users.filter((u) => u.role === "SALES_REP");
-    } else if (currentUser?.role !== "admin") {
-      // If not admin or sales manager, they shouldn't be listing users anyway
-      // but if the route is open, we filter to empty or self
-      if (currentUser) {
-        users = users.filter((u) => u.email === currentUser.email);
-      } else {
-        users = [];
-      }
+    // Fetch fresh user from DB to avoid completely stale JWT role payloads
+    const currentUser = jwtUser?.email ? await userService.findByEmail(jwtUser.email) : null;
+    const currentRole = currentUser?.role?.toUpperCase();
+
+    let users: any[];
+
+    if (currentRole === "ADMIN") {
+      users = await userService.findAll();
+    } else if (currentRole === "SALES_MANAGER") {
+      users = await userService.findAll(["SALES_REP", "SALES_MANAGER"]);
+    } else {
+      users = currentUser ? [currentUser] : [];
     }
 
-    res.status(200).send(users);
+    res.status(200).send({
+      message: "Users retrieved successfully.",
+      data: users
+    });
     return;
   } catch (error) {
     next(error);
@@ -73,7 +83,10 @@ export async function updateUser(
   try {
     const { id } = req.params;
     const user = await userService.updateUser(id, req.body);
-    res.status(200).send(user);
+    res.status(200).send({
+      message: "User updated successfully.",
+      data: user
+    });
     return;
   } catch (error) {
     next(error);
@@ -87,8 +100,17 @@ export async function deleteUser(
 ) {
   try {
     const { id } = req.params;
+
+    // Prevent self-deletion
+    if (req.user?.id === id) {
+      res.status(403).send({ message: "You cannot delete your own account." });
+      return;
+    }
+
     await userService.deleteUser(id);
-    res.status(200).send({ message: "USER_DELETED" });
+    res.status(200).send({
+      message: "User deleted successfully."
+    });
     return;
   } catch (error) {
     next(error);

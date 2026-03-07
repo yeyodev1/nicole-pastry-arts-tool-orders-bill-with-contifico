@@ -1,13 +1,17 @@
 import express from "express";
 import * as OrderController from "../controllers/order.controller";
+import { authMiddleware } from "../middlewares/auth.middleware";
 
 const router = express.Router();
 
 // POST /api/orders
-router.post("/", OrderController.createOrder);
+router.post("/", authMiddleware as any, OrderController.createOrder);
 
 // GET /api/orders
-router.get("/", OrderController.getOrders);
+router.get("/", authMiddleware as any, OrderController.getOrders);
+
+// GET /api/orders/invoice-status
+router.get("/invoice-status", authMiddleware as any, OrderController.getInvoiceStatus);
 
 // GET /api/orders/reports/delivery
 router.get("/reports/delivery", OrderController.getDeliveryReport);

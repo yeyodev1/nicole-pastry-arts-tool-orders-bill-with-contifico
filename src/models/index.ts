@@ -9,6 +9,9 @@ import { POSStockObjectiveModel } from "./pos-stock-objective.model";
 import { POSDailyEntryModel } from "./pos-daily-entry.model";
 import { POSLossModel } from "./pos-loss.model";
 import { SupplierOrderModel } from "./supplier-order.model";
+import { GoalSettingsModel } from "./goal-settings.model";
+import { ProductionSettingsModel } from "./production-settings.model";
+import { ProviderCategoryModel } from "./provider-category.model";
 
 export const models = {
   orders: OrderModel,
@@ -22,4 +25,7 @@ export const models = {
   posDailyEntries: POSDailyEntryModel,
   posLosses: POSLossModel,
   supplierOrders: SupplierOrderModel,
+  goalSettings: GoalSettingsModel,
+  productionSettings: ProductionSettingsModel,
+  providerCategories: ProviderCategoryModel,
 };

@@ -118,13 +118,13 @@ export class ContificoService {
         let base_cero = 0;
         let base_gravable = 0;
         let base_no_gravable = 0;
-        let iva_line = 0;
 
         if (porcentaje_iva > 0) {
           base_gravable = Number(totalLine.toFixed(2)); // Round Base to 2 decimals
-          iva_line = Number((base_gravable * (porcentaje_iva / 100)).toFixed(2)); // Calc IVA from rounded base
           subtotal_15 += base_gravable;
-          total_iva += iva_line;
+          // NOTE: Do NOT accumulate per-line rounded IVA here.
+          // total_iva is computed once from subtotal_15 after the loop
+          // to avoid 1-cent rounding discrepancies with Contifico's validation.
         } else {
           base_cero = Number(totalLine.toFixed(2)); // Round Base 0 to 2 decimals
           subtotal_0 += base_cero;
@@ -146,6 +146,10 @@ export class ContificoService {
         };
       });
 
+      // Compute total_iva ONCE from the total taxable base (not sum of per-line rounded IVAs).
+      // This ensures our `iva` field matches what Contifico recomputes from line bases,
+      // preventing the "saldos de debe y haber no cuadran" 1-cent error.
+      total_iva = Number((subtotal_15 * 0.15).toFixed(2));
       total_final = subtotal_0 + subtotal_15 + total_iva;
 
       // 2. Prepare Payload
@@ -163,9 +167,13 @@ export class ContificoService {
       const rawId = (orderData.invoiceData.ruc || "").trim();
       const isCedula = rawId.length === 10;
 
+      // In Ecuador, a natural person's RUC is their 10-digit cedula + "001".
+      // Contifico requires a 13-digit ruc field on invoices even for natural persons.
+      const computedRuc = isCedula ? rawId + "001" : rawId;
+
       const clientePayload = {
         razon_social: orderData.invoiceData.businessName,
-        ruc: isCedula ? "" : rawId,
+        ruc: computedRuc,
         cedula: isCedula ? rawId : "",
         email: orderData.invoiceData.email,
         direccion: orderData.invoiceData.address,
@@ -239,7 +247,9 @@ export class ContificoService {
       return response.data;
     } catch (error: any) {
       console.error("❌ Error fetching products from Contífico:", error.response?.data || error.message);
-      throw new Error("Failed to fetch products from Contífico");
+      const err = new Error("Failed to fetch products from Contífico") as any;
+      err.contificoStatus = error.response?.status ?? null;
+      throw err;
     }
   }
 

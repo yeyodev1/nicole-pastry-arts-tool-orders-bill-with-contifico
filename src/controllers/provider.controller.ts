@@ -56,6 +56,19 @@ export async function createProvider(req: Request, res: Response, next: NextFunc
       return;
     }
 
+    const missingFields = [];
+    if (!providerData.ruc?.trim()) missingFields.push("RUC");
+    if (!providerData.phone?.trim()) missingFields.push("Teléfono");
+    if (!providerData.address?.trim()) missingFields.push("Dirección");
+    if (!providerData.email?.trim()) missingFields.push("Correo electrónico");
+
+    if (missingFields.length > 0) {
+      res.status(HttpStatusCode.BadRequest).send({
+        message: `Debe completar todos los campos obligatorios antes de crear el proveedor: ${missingFields.join(", ")}.`
+      });
+      return;
+    }
+
     const existing = await models.providers.findOne({ name: providerData.name });
     if (existing) {
       res.status(HttpStatusCode.Conflict).send({
@@ -78,6 +91,24 @@ export async function createProvider(req: Request, res: Response, next: NextFunc
       message: "Error creating provider.",
       error: error instanceof Error ? error.message : String(error)
     });
+    return;
+  }
+}
+
+export async function getProviderById(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { id } = req.params;
+    const provider = await models.providers.findById(id).lean();
+    if (!provider) {
+      res.status(HttpStatusCode.NotFound).send({ message: "Provider not found." });
+      return;
+    }
+    const itemCount = await models.rawMaterials.countDocuments({ provider: provider._id });
+    res.status(HttpStatusCode.Ok).send({ message: "Provider retrieved successfully.", data: { ...provider, itemCount } });
+    return;
+  } catch (error) {
+    console.error("❌ Error in getProviderById:", error);
+    res.status(HttpStatusCode.InternalServerError).send({ message: "Error fetching provider.", error: error instanceof Error ? error.message : String(error) });
     return;
   }
 }

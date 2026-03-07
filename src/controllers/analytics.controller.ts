@@ -155,33 +155,43 @@ export async function syncAnalytics(req: Request, res: Response, next: NextFunct
 }
 
 /**
- * Calculate tiered marginal commission
- * Tiers:
- * 0 - 10,000: 0%
- * 10,000 - 13,000: 5%
- * 13,000 - 16,000: 10%
- * 16,000+: 15%
+ * Calculate tiered marginal commission with a minimum threshold.
+ *
+ * Rules:
+ *  - If sales < minimumThreshold → $0 commission (goal not reached yet).
+ *  - If sales >= minimumThreshold → apply progressive brackets from $0 on the FULL amount.
+ *
+ * Example with tiers [{0, 2%}, {10000, 3%}, {13000, 6%}] and threshold 10000:
+ *   sales = 9999  → $0   (below threshold)
+ *   sales = 10000 → $200 (10000 × 2%)
+ *   sales = 14000 → $200 + $90 + $60 = $350
  */
-function calculateCommission(sales: number): number {
+function calculateCommission(
+  sales: number,
+  tiers: Array<{ threshold: number; rate: number }>,
+  minimumThreshold: number
+): number {
+  if (!tiers || tiers.length === 0 || sales <= 0) return 0;
+
+  // No commission until the person's individual goal is reached
+  if (sales < minimumThreshold) return 0;
+
+  const sortedTiers = [...tiers].sort((a, b) => a.threshold - b.threshold);
   let commission = 0;
 
-  if (sales <= 10000) return 0;
+  for (let i = 0; i < sortedTiers.length; i++) {
+    const currentTier = sortedTiers[i];
+    const nextTier = sortedTiers[i + 1];
 
-  // Tier 1: 10k - 13k (max 3000)
-  const t1Sales = Math.min(sales - 10000, 3000);
-  commission += t1Sales * 0.05;
-
-  if (sales <= 13000) return commission;
-
-  // Tier 2: 13k - 16k (max 3000)
-  const t2Sales = Math.min(sales - 13000, 3000);
-  commission += t2Sales * 0.10;
-
-  if (sales <= 16000) return commission;
-
-  // Tier 3: 16k+
-  const t3Sales = sales - 16000;
-  commission += t3Sales * 0.15;
+    if (sales > currentTier.threshold) {
+      let salesInThisTier = sales - currentTier.threshold;
+      if (nextTier) {
+        const maxInThisTier = nextTier.threshold - currentTier.threshold;
+        salesInThisTier = Math.min(salesInThisTier, maxInThisTier);
+      }
+      commission += salesInThisTier * (currentTier.rate / 100);
+    }
+  }
 
   return Math.round(commission * 100) / 100;
 }
@@ -236,7 +246,15 @@ export async function getSalesByResponsible(req: AuthRequest, res: Response, nex
 
     // --- DATA ISOLATION ---
     // Extract user from request (populated by authMiddleware)
-    const currentUser = (req as any).user;
+    const jwtUser = (req as any).user;
+
+    // Fetch fresh user to avoid stale JWT issues
+    let dbUser = jwtUser;
+    if (jwtUser?.email) {
+      dbUser = await models.users.findOne({ email: jwtUser.email }).lean() || jwtUser;
+    }
+
+    const currentRole = dbUser?.role?.toUpperCase();
 
     const orderMatch: any = {
       createdAt: { $gte: startDate, $lte: endDate },
@@ -244,9 +262,20 @@ export async function getSalesByResponsible(req: AuthRequest, res: Response, nex
     };
 
     // If SALES_REP, only show their own data
-    if (currentUser && currentUser.role === 'SALES_REP') {
-      orderMatch.responsible = currentUser.name;
+    if (currentRole === 'SALES_REP' || currentRole === 'SALES') {
+      // Use case-insensitive regex for Name to catch "diego reyes" vs "Diego Reyes"
+      if (dbUser.name) {
+        orderMatch.responsible = { $regex: new RegExp(`^${dbUser.name}$`, "i") };
+      }
     }
+
+    // Fetch GoalSettings to calculate dynamic commissions
+    const settings = await models.goalSettings.findOne({ key: "global" }).lean();
+    const commissionTiers = settings?.commissionTiers ?? [
+      { threshold: 0, rate: 2 },
+      { threshold: 10000, rate: 3 },
+      { threshold: 13000, rate: 6 }
+    ];
 
     const stats = await models.orders.aggregate([
       {
@@ -264,6 +293,18 @@ export async function getSalesByResponsible(req: AuthRequest, res: Response, nex
       }
     ]);
 
+    // Resolve individual goals map (Mongoose Map or plain object after lean())
+    const defaultSellerGoal = settings?.sellerGoal ?? 10000;
+    const rawIndividualGoals = settings?.individualGoals;
+    const getPersonGoal = (name: string): number => {
+      if (!rawIndividualGoals) return defaultSellerGoal;
+      // Mongoose Map (non-lean) has .get(); lean() returns plain object
+      if (typeof (rawIndividualGoals as any).get === 'function') {
+        return (rawIndividualGoals as any).get(name) ?? defaultSellerGoal;
+      }
+      return (rawIndividualGoals as any)[name] ?? defaultSellerGoal;
+    };
+
     // Map Roles and Commissions
     const enhancedStats = stats.map(s => {
       let role = 'Vendedor';
@@ -272,17 +313,29 @@ export async function getSalesByResponsible(req: AuthRequest, res: Response, nex
       if (name.includes('web') || name.includes('online')) {
         role = 'Digital';
       } else if (name.includes('hillary') || name.includes('ivin') || name.includes('e')) {
-        role = 'Comercial'; // Known sales reps
+        role = 'Comercial';
       }
 
-      const commission = calculateCommission(s.totalSales);
+      // Each person's commission unlocks only when they reach their individual goal
+      const personalGoal = getPersonGoal(s._id);
+      const goalReached = s.totalSales >= personalGoal;
+      const commission = calculateCommission(
+        s.totalSales,
+        commissionTiers as Array<{ threshold: number; rate: number }>,
+        personalGoal
+      );
 
       return {
         ...s,
         role,
-        commission
+        commission,
+        personalGoal,
+        goalReached
       };
     });
+
+    // Calculate the number of actual salespeople for the dynamic goal (exclude Digital/Web)
+    const activeSalespeopleCount = enhancedStats.filter(s => s.role !== 'Digital').length;
 
     res.status(HttpStatusCode.Ok).send({
       message: "Sales by responsible retrieved successfully.",
@@ -290,7 +343,8 @@ export async function getSalesByResponsible(req: AuthRequest, res: Response, nex
         from: startDate.toLocaleDateString("es-EC", { timeZone: "America/Guayaquil" }),
         to: endDate.toLocaleDateString("es-EC", { timeZone: "America/Guayaquil" })
       },
-      monthlyGoal: 10000,
+      monthlyGoal: 10000 * Math.max(1, activeSalespeopleCount),
+      commissionTiers,
       stats: enhancedStats
     });
     return;

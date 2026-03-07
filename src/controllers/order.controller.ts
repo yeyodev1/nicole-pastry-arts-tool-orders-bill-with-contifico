@@ -10,10 +10,17 @@ const contificoService = new ContificoService();
 export async function createOrder(req: AuthRequest, res: Response, next: NextFunction) {
   try {
     const orderData = req.body;
-    const currentUser = req.user;
+    const jwtUser = req.user;
+
+    // Fetch fresh user to avoid stale JWT issues
+    let currentUser: any = jwtUser;
+    if (jwtUser?.email) {
+      currentUser = await models.users.findOne({ email: jwtUser.email }).lean() || jwtUser;
+    }
+    const currentRole = currentUser?.role?.toUpperCase();
 
     // Auto-populate responsible from logged-in user
-    if (currentUser && (currentUser.role === 'SALES_REP' || currentUser.role === 'SALES_MANAGER')) {
+    if (currentUser && (currentRole === 'SALES_REP' || currentRole === 'SALES_MANAGER' || currentRole === 'SALES')) {
       orderData.responsible = currentUser.name;
     }
 
@@ -212,12 +219,22 @@ Valor Envío: $${orderData.deliveryValue || 0}
 export async function getOrders(req: AuthRequest, res: Response, next: NextFunction) {
   try {
     const { search, startDate, endDate } = req.query;
-    const currentUser = req.user;
+    const jwtUser = req.user;
+
+    // Fetch fresh user to avoid stale JWT issues
+    let currentUser: any = jwtUser;
+    if (jwtUser?.email) {
+      currentUser = await models.users.findOne({ email: jwtUser.email }).lean() || jwtUser;
+    }
+    const currentRole = currentUser?.role?.toUpperCase();
+
     const query: any = {};
 
     // Data Isolation for Sales Reps
-    if (currentUser && currentUser.role === 'SALES_REP') {
-      query.responsible = currentUser.name;
+    if (currentUser && (currentRole === 'SALES_REP' || currentRole === 'SALES')) {
+      if (currentUser.name) {
+        query.responsible = { $regex: new RegExp(`^${currentUser.name}$`, "i") };
+      }
     }
 
     // 1. Search Filter (Name, RUC, Email)
@@ -318,20 +335,54 @@ export async function getOrderById(req: AuthRequest, res: Response, next: NextFu
 }
 
 /**
- * Process all pending invoices for the day
- * This should be called by a CRON job at 11:59 PM
+ * Get invoice processing status (counts of pending and error orders)
+ * GET /api/orders/invoice-status
+ */
+export async function getInvoiceStatus(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    const [pending, error, processed, errorOrders] = await Promise.all([
+      models.orders.countDocuments({ invoiceNeeded: true, invoiceStatus: "PENDING" }),
+      models.orders.countDocuments({ invoiceNeeded: true, invoiceStatus: "ERROR" }),
+      models.orders.countDocuments({ invoiceStatus: "PROCESSED" }),
+      models.orders.find(
+        { invoiceNeeded: true, invoiceStatus: "ERROR" },
+        { _id: 1, customerName: 1, invoiceError: 1, invoiceData: 1, deliveryDate: 1 }
+      ).sort({ updatedAt: -1 }).limit(50).lean(),
+    ]);
+
+    res.status(HttpStatusCode.Ok).send({ pending, error, processed, errorOrders });
+    return;
+  } catch (err) {
+    res.status(HttpStatusCode.InternalServerError).send({ message: "Error fetching invoice status" });
+    return;
+  }
+}
+
+/**
+ * Process all pending (and errored) invoices
+ * Called by GitHub Actions cron — protected by CRON_SECRET
  */
 export async function processPendingInvoices(req: AuthRequest, res: Response, next: NextFunction) {
   try {
+    // ── Auth: validate CRON_SECRET ──────────────────────────────────────────
+    const cronSecret = process.env.CRON_SECRET;
+    if (cronSecret) {
+      const authHeader = req.headers["authorization"] || "";
+      const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
+      if (token !== cronSecret) {
+        res.status(HttpStatusCode.Unauthorized).send({ message: "Unauthorized." });
+        return;
+      }
+    }
 
-    // Find all orders with invoiceNeeded: true AND invoiceStatus: 'PENDING'
-    // BATCH LIMIT: Process 5 at a time to avoid Vercel Timeouts (10s limit on free tier)
+    // ── Batch config ────────────────────────────────────────────────────────
+    // Process PENDING first, then ERROR (retries). 5 orders per batch.
     const BATCH_SIZE = 5;
 
-    // Check total pending count first
+    // Count actionable orders: PENDING + ERROR
     const totalPending = await models.orders.countDocuments({
       invoiceNeeded: true,
-      invoiceStatus: "PENDING"
+      invoiceStatus: { $in: ["PENDING", "ERROR"] }
     });
 
     if (totalPending === 0) {
@@ -339,10 +390,13 @@ export async function processPendingInvoices(req: AuthRequest, res: Response, ne
       return;
     }
 
+    // PENDING orders take priority over ERROR retries
     const pendingOrders = await models.orders.find({
       invoiceNeeded: true,
-      invoiceStatus: "PENDING"
-    }).limit(BATCH_SIZE);
+      invoiceStatus: { $in: ["PENDING", "ERROR"] }
+    })
+      .sort({ invoiceStatus: -1 }) // "PENDING" > "ERROR" alphabetically → PENDING first
+      .limit(BATCH_SIZE);
 
 
     const results = {
@@ -370,8 +424,7 @@ export async function processPendingInvoices(req: AuthRequest, res: Response, ne
         }
 
         order.invoiceStatus = "PROCESSED";
-        order.invoiceInfo = invoiceResponse; // Save the invoice details
-        order.invoiceInfo = invoiceResponse; // Save the invoice details
+        order.invoiceInfo = invoiceResponse;
         await order.save();
 
         // 3.1 Trigger SRI Authorization (Manual Trigger Feature)
@@ -407,6 +460,7 @@ export async function processPendingInvoices(req: AuthRequest, res: Response, ne
       } catch (error: any) {
         console.error(`❌ Failed to invoice order ${order._id}:`, error.message);
         order.invoiceStatus = "ERROR";
+        order.invoiceError = error.message;
         await order.save();
 
         results.failed++;
@@ -417,11 +471,16 @@ export async function processPendingInvoices(req: AuthRequest, res: Response, ne
       }
     }
 
-    // Calculate remaining (approximate)
-    const remaining = Math.max(0, totalPending - pendingOrders.length);
+    // Re-count remaining after processing (accurate for loop control)
+    const remaining = await models.orders.countDocuments({
+      invoiceNeeded: true,
+      invoiceStatus: { $in: ["PENDING", "ERROR"] }
+    });
+
+    console.log(`[batch-invoice] Batch done. Processed: ${results.processed}, Failed: ${results.failed}, Remaining: ${remaining}`);
 
     res.status(HttpStatusCode.Ok).send({
-      message: `Batch processed. ${remaining} pending invoices remaining.`,
+      message: `Batch processed. ${remaining} invoices remaining.`,
       results,
       remaining,
       totalPending
@@ -469,8 +528,10 @@ export async function updateInvoiceData(req: AuthRequest, res: Response, next: N
     // Reset status to PENDING if it was ERROR, so it gets picked up again
     if (order.invoiceNeeded) {
       order.invoiceStatus = "PENDING";
+      order.invoiceError = undefined; // Clear previous error when data is corrected
     } else {
-      order.invoiceStatus = undefined; // Clear status if no longer needed
+      order.invoiceStatus = undefined;
+      order.invoiceError = undefined;
     }
 
     await order.save();
@@ -733,8 +794,24 @@ export async function generateInvoice(req: AuthRequest, res: Response, next: Nex
     const invoiceResponse = await contificoService.createInvoice(order);
 
     if (invoiceResponse.error) {
-      const msg = typeof invoiceResponse.error === 'object' ? JSON.stringify(invoiceResponse.error) : String(invoiceResponse.error);
-      throw new Error(msg);
+      // Extract human-readable message from Contifico's error response
+      let contificoMensaje = '';
+      const rawError = invoiceResponse.error;
+
+      if (typeof rawError === 'object' && rawError !== null) {
+        contificoMensaje = rawError.mensaje || JSON.stringify(rawError);
+      } else if (typeof rawError === 'string') {
+        try {
+          const parsed = JSON.parse(rawError);
+          contificoMensaje = parsed.mensaje || rawError;
+        } catch {
+          contificoMensaje = rawError;
+        }
+      }
+
+      const err = new Error(contificoMensaje) as any;
+      err.isContificoError = true;
+      throw err;
     }
 
     // Update Order
@@ -770,11 +847,16 @@ export async function generateInvoice(req: AuthRequest, res: Response, next: Nex
     console.error("Error generating invoice:", error);
 
     try {
-      await models.orders.findByIdAndUpdate(req.params.id, { invoiceStatus: 'ERROR' });
+      await models.orders.findByIdAndUpdate(req.params.id, { invoiceStatus: 'ERROR', invoiceError: error.message });
     } catch (e) { }
 
+    const contificoMessage = error.isContificoError ? error.message : null;
+
     res.status(HttpStatusCode.InternalServerError).send({
-      message: "Failed to generate invoice.",
+      message: contificoMessage
+        ? `Error de Contífico: ${contificoMessage}`
+        : "Error al generar la factura.",
+      contificoMessage: contificoMessage || null,
       error: error.message || String(error)
     });
     return;
@@ -883,7 +965,7 @@ export async function settleOrderInIsland(req: AuthRequest, res: Response) {
  */
 export async function getDeliveryReport(req: AuthRequest, res: Response, next: NextFunction) {
   try {
-    const { startDate, endDate, deliveryPersonId } = req.query;
+    const { startDate, endDate, deliveryPersonId, page = "1", limit = "10" } = req.query;
 
     if (!startDate || !endDate) {
       res.status(HttpStatusCode.BadRequest).send({
@@ -891,6 +973,10 @@ export async function getDeliveryReport(req: AuthRequest, res: Response, next: N
       });
       return;
     }
+
+    const pageNumber = parseInt(page as string, 10) || 1;
+    const limitNumber = parseInt(limit as string, 10) || 10;
+    const skip = (pageNumber - 1) * limitNumber;
 
     const query: any = {
       deliveryDate: {
@@ -940,13 +1026,18 @@ export async function getDeliveryReport(req: AuthRequest, res: Response, next: N
       return acc;
     }, {});
 
+    const paginatedOrders = orders.slice(skip, skip + limitNumber);
+    const totalPages = Math.ceil(orders.length / limitNumber) || 1;
+
     res.status(HttpStatusCode.Ok).send({
       message: "Delivery report retrieved successfully.",
       data: {
         total: Number(total.toFixed(2)),
-        count: orders.length,
+        count: orders.length, // total items in date range
+        totalPages,
+        currentPage: pageNumber,
         summary: Object.values(summaryByPerson),
-        orders
+        orders: paginatedOrders // only return this page's items
       }
     });
     return;
