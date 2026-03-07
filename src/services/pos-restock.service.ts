@@ -127,6 +127,7 @@ export class POSRestockService {
           stockFinal: found.stockFinal,
           bajas: found.bajas,
           pedidoSugerido: found.pedidoSugerido,
+          pedidoFinal: found.pedidoFinal,
           date: lastEntryDateStr,
           // Include detailed losses only if it matches today's entry
           detailedLosses: isToday ? (lossesByProduct[obj.productName] || []) : []
