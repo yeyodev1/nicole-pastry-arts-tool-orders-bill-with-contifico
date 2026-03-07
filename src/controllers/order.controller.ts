@@ -340,13 +340,17 @@ export async function getOrderById(req: AuthRequest, res: Response, next: NextFu
  */
 export async function getInvoiceStatus(req: AuthRequest, res: Response, next: NextFunction) {
   try {
-    const [pending, error, processed] = await Promise.all([
+    const [pending, error, processed, errorOrders] = await Promise.all([
       models.orders.countDocuments({ invoiceNeeded: true, invoiceStatus: "PENDING" }),
       models.orders.countDocuments({ invoiceNeeded: true, invoiceStatus: "ERROR" }),
       models.orders.countDocuments({ invoiceStatus: "PROCESSED" }),
+      models.orders.find(
+        { invoiceNeeded: true, invoiceStatus: "ERROR" },
+        { _id: 1, customerName: 1, invoiceError: 1, invoiceData: 1, deliveryDate: 1 }
+      ).sort({ updatedAt: -1 }).limit(50).lean(),
     ]);
 
-    res.status(HttpStatusCode.Ok).send({ pending, error, processed });
+    res.status(HttpStatusCode.Ok).send({ pending, error, processed, errorOrders });
     return;
   } catch (err) {
     res.status(HttpStatusCode.InternalServerError).send({ message: "Error fetching invoice status" });
@@ -456,6 +460,7 @@ export async function processPendingInvoices(req: AuthRequest, res: Response, ne
       } catch (error: any) {
         console.error(`❌ Failed to invoice order ${order._id}:`, error.message);
         order.invoiceStatus = "ERROR";
+        order.invoiceError = error.message;
         await order.save();
 
         results.failed++;
@@ -523,8 +528,10 @@ export async function updateInvoiceData(req: AuthRequest, res: Response, next: N
     // Reset status to PENDING if it was ERROR, so it gets picked up again
     if (order.invoiceNeeded) {
       order.invoiceStatus = "PENDING";
+      order.invoiceError = undefined; // Clear previous error when data is corrected
     } else {
-      order.invoiceStatus = undefined; // Clear status if no longer needed
+      order.invoiceStatus = undefined;
+      order.invoiceError = undefined;
     }
 
     await order.save();
@@ -840,7 +847,7 @@ export async function generateInvoice(req: AuthRequest, res: Response, next: Nex
     console.error("Error generating invoice:", error);
 
     try {
-      await models.orders.findByIdAndUpdate(req.params.id, { invoiceStatus: 'ERROR' });
+      await models.orders.findByIdAndUpdate(req.params.id, { invoiceStatus: 'ERROR', invoiceError: error.message });
     } catch (e) { }
 
     const contificoMessage = error.isContificoError ? error.message : null;

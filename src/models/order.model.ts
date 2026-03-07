@@ -67,6 +67,7 @@ export interface IOrder extends Document {
     address: string;
   };
   invoiceStatus?: "PENDING" | "PROCESSED" | "ERROR";
+  invoiceError?: string;
   invoiceInfo?: any;
   productionStage: "PENDING" | "IN_PROCESS" | "FINISHED" | "DELAYED" | "VOID";
   productionNotes: string;
@@ -182,6 +183,7 @@ const OrderSchema = new Schema<IOrder>(
       enum: ["PENDING", "PROCESSED", "ERROR"],
       default: undefined,
     },
+    invoiceError: { type: String, default: undefined },
     responsible: {
       type: String,
       required: true,
