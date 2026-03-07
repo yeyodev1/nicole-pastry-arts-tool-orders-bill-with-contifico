@@ -11,6 +11,7 @@ import { POSLossModel } from "./pos-loss.model";
 import { SupplierOrderModel } from "./supplier-order.model";
 import { GoalSettingsModel } from "./goal-settings.model";
 import { ProductionSettingsModel } from "./production-settings.model";
+import { ProviderCategoryModel } from "./provider-category.model";
 
 export const models = {
   orders: OrderModel,
@@ -26,4 +27,5 @@ export const models = {
   supplierOrders: SupplierOrderModel,
   goalSettings: GoalSettingsModel,
   productionSettings: ProductionSettingsModel,
+  providerCategories: ProviderCategoryModel,
 };

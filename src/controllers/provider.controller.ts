@@ -56,6 +56,19 @@ export async function createProvider(req: Request, res: Response, next: NextFunc
       return;
     }
 
+    const missingFields = [];
+    if (!providerData.ruc?.trim()) missingFields.push("RUC");
+    if (!providerData.phone?.trim()) missingFields.push("Teléfono");
+    if (!providerData.address?.trim()) missingFields.push("Dirección");
+    if (!providerData.email?.trim()) missingFields.push("Correo electrónico");
+
+    if (missingFields.length > 0) {
+      res.status(HttpStatusCode.BadRequest).send({
+        message: `Debe completar todos los campos obligatorios antes de crear el proveedor: ${missingFields.join(", ")}.`
+      });
+      return;
+    }
+
     const existing = await models.providers.findOne({ name: providerData.name });
     if (existing) {
       res.status(HttpStatusCode.Conflict).send({
