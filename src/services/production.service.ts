@@ -32,22 +32,35 @@ export class ProductionService {
    * Returns a list of all active production orders with full details.
    * Useful for the tabular list view.
    */
-  async getAllOrders() {
-    // We want all active orders where the lifecycle (Dispatch) isn't complete,
-    // OR orders that WERE dispatched recently (e.g., in the last 7 days) to show in the history/sent sections.
-    const sevenDaysAgo = new Date();
-    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-    sevenDaysAgo.setHours(0, 0, 0, 0);
+  async getAllOrders(dateStr?: string) {
+    let matchQuery: any;
 
-    const orders = await OrderModel.find({
-      $or: [
-        { dispatchStatus: { $nin: ["SENT", "RETURNED"] } },
-        {
-          dispatchStatus: "SENT",
-          deliveryDate: { $gte: sevenDaysAgo }
-        }
-      ]
-    }).sort({ deliveryDate: 1 });
+    if (!dateStr || dateStr === 'today') {
+      // Default: only today's orders in Ecuador time
+      const ecNow = getEcuadorNow();
+      const y = ecNow.getUTCFullYear();
+      const m = String(ecNow.getUTCMonth() + 1).padStart(2, '0');
+      const d = String(ecNow.getUTCDate()).padStart(2, '0');
+      const { startDate, endDate } = getECDateRange(`${y}-${m}-${d}`, false);
+      matchQuery = { deliveryDate: { $gte: startDate, $lte: endDate } };
+    } else if (dateStr === 'all') {
+      // Broad query: all active + recently sent (last 7 days)
+      const sevenDaysAgo = new Date();
+      sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+      sevenDaysAgo.setHours(0, 0, 0, 0);
+      matchQuery = {
+        $or: [
+          { dispatchStatus: { $nin: ["SENT", "RETURNED"] } },
+          { dispatchStatus: "SENT", deliveryDate: { $gte: sevenDaysAgo } }
+        ]
+      };
+    } else {
+      // Specific YYYY-MM-DD date
+      const { startDate, endDate } = getECDateRange(dateStr, false);
+      matchQuery = { deliveryDate: { $gte: startDate, $lte: endDate } };
+    }
+
+    const orders = await OrderModel.find(matchQuery).sort({ deliveryDate: 1 });
 
     // FIX: Auto-repair productionStage if inconsistent
     // If all products are fully produced but stage is PENDING/IN_PROCESS, mark as FINISHED

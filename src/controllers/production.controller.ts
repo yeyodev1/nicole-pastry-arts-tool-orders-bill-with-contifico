@@ -20,7 +20,8 @@ export async function getProductionTasks(req: Request, res: Response) {
 
 export async function getAllProductionOrders(req: Request, res: Response) {
   try {
-    const orders = await productionService.getAllOrders();
+    const date = req.query.date as string | undefined;
+    const orders = await productionService.getAllOrders(date);
     res.status(HttpStatusCode.Ok).send({
       message: "All production orders retrieved successfully.",
       count: orders.length,
