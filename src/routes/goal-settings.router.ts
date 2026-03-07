@@ -5,7 +5,7 @@ import { authMiddleware } from "../middlewares/auth.middleware";
 const router = express.Router();
 
 router.use(authMiddleware);
-router.get("/goals", getGoalSettings);
-router.put("/goals", updateGoalSettings);
+router.get("/", getGoalSettings);
+router.put("/", updateGoalSettings);
 
 export default router;

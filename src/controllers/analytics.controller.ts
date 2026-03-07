@@ -155,28 +155,40 @@ export async function syncAnalytics(req: Request, res: Response, next: NextFunct
 }
 
 /**
- * Calculate tiered marginal commission dynamically
+ * Calculate tiered marginal commission with a minimum threshold.
+ *
+ * Rules:
+ *  - If sales < minimumThreshold → $0 commission (goal not reached yet).
+ *  - If sales >= minimumThreshold → apply progressive brackets from $0 on the FULL amount.
+ *
+ * Example with tiers [{0, 2%}, {10000, 3%}, {13000, 6%}] and threshold 10000:
+ *   sales = 9999  → $0   (below threshold)
+ *   sales = 10000 → $200 (10000 × 2%)
+ *   sales = 14000 → $200 + $90 + $60 = $350
  */
-function calculateCommission(sales: number, tiers: Array<{ threshold: number; rate: number }>): number {
-  if (sales <= 0 || !tiers || tiers.length === 0) return 0;
+function calculateCommission(
+  sales: number,
+  tiers: Array<{ threshold: number; rate: number }>,
+  minimumThreshold: number
+): number {
+  if (!tiers || tiers.length === 0 || sales <= 0) return 0;
 
-  // Ensure tiers are sorted by threshold ascending
+  // No commission until the person's individual goal is reached
+  if (sales < minimumThreshold) return 0;
+
   const sortedTiers = [...tiers].sort((a, b) => a.threshold - b.threshold);
   let commission = 0;
 
   for (let i = 0; i < sortedTiers.length; i++) {
     const currentTier = sortedTiers[i];
-    const nextTier = sortedTiers[i + 1]; // may be undefined
+    const nextTier = sortedTiers[i + 1];
 
     if (sales > currentTier.threshold) {
       let salesInThisTier = sales - currentTier.threshold;
-
       if (nextTier) {
-        // We only calculate up to the start of the next tier
-        const maxSalesThisTier = nextTier.threshold - currentTier.threshold;
-        salesInThisTier = Math.min(salesInThisTier, maxSalesThisTier);
+        const maxInThisTier = nextTier.threshold - currentTier.threshold;
+        salesInThisTier = Math.min(salesInThisTier, maxInThisTier);
       }
-
       commission += salesInThisTier * (currentTier.rate / 100);
     }
   }
@@ -281,6 +293,18 @@ export async function getSalesByResponsible(req: AuthRequest, res: Response, nex
       }
     ]);
 
+    // Resolve individual goals map (Mongoose Map or plain object after lean())
+    const defaultSellerGoal = settings?.sellerGoal ?? 10000;
+    const rawIndividualGoals = settings?.individualGoals;
+    const getPersonGoal = (name: string): number => {
+      if (!rawIndividualGoals) return defaultSellerGoal;
+      // Mongoose Map (non-lean) has .get(); lean() returns plain object
+      if (typeof (rawIndividualGoals as any).get === 'function') {
+        return (rawIndividualGoals as any).get(name) ?? defaultSellerGoal;
+      }
+      return (rawIndividualGoals as any)[name] ?? defaultSellerGoal;
+    };
+
     // Map Roles and Commissions
     const enhancedStats = stats.map(s => {
       let role = 'Vendedor';
@@ -289,15 +313,24 @@ export async function getSalesByResponsible(req: AuthRequest, res: Response, nex
       if (name.includes('web') || name.includes('online')) {
         role = 'Digital';
       } else if (name.includes('hillary') || name.includes('ivin') || name.includes('e')) {
-        role = 'Comercial'; // Known sales reps
+        role = 'Comercial';
       }
 
-      const commission = calculateCommission(s.totalSales, commissionTiers as Array<{ threshold: number; rate: number }>);
+      // Each person's commission unlocks only when they reach their individual goal
+      const personalGoal = getPersonGoal(s._id);
+      const goalReached = s.totalSales >= personalGoal;
+      const commission = calculateCommission(
+        s.totalSales,
+        commissionTiers as Array<{ threshold: number; rate: number }>,
+        personalGoal
+      );
 
       return {
         ...s,
         role,
-        commission
+        commission,
+        personalGoal,
+        goalReached
       };
     });
 
