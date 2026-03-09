@@ -8,5 +8,6 @@ const router = Router();
 
 router.post("/", authMiddleware, WarehouseController.createMovement);
 router.get("/", WarehouseController.getMovements);
+router.get("/stock-by-location/:rawMaterialId", authMiddleware, WarehouseController.getStockByLocation);
 
 export { router as WarehouseRouter };

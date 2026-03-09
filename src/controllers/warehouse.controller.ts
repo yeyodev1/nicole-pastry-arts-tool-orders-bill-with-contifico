@@ -10,15 +10,16 @@ interface IAuthRequest extends Request {
 // --- Create Movement ---
 async function createMovement(req: IAuthRequest, res: Response, next: NextFunction) {
   try {
-    const { type, rawMaterial, quantity, provider, entity, observation, unitCost, totalValue, responsible } = req.body;
-    // Fallback to body user if req.user is missing (e.g. if auth middleware is bypassed or fails)
+    const {
+      type, rawMaterial, quantity, provider, entity, observation,
+      unitCost, totalValue, responsible, receptionPoint,
+    } = req.body;
     const userId = req.user?.id || req.body.user;
 
     if (!userId) {
       return res.status(401).send({ message: "User authentication required." });
     }
 
-    // 1. Validate Input
     if (!type || !rawMaterial || !quantity) {
       return res.status(400).send({ message: "Type, Raw Material, and Quantity are required." });
     }
@@ -27,41 +28,51 @@ async function createMovement(req: IAuthRequest, res: Response, next: NextFuncti
       return res.status(400).send({ message: "Quantity must be greater than 0." });
     }
 
-    // 2. Check Raw Material existence
     const material = await RawMaterialModel.findById(rawMaterial);
     if (!material) {
       return res.status(404).send({ message: "Raw Material not found." });
     }
 
-    // 3. Handle Logic based on Type
     if (type === "OUT" || type === "LOSS") {
-      if (type === "OUT" && !entity) {
-        return res.status(400).send({ message: "Entity is required for OUT movements." });
-      }
-
-      if (material.quantity < quantity) {
+      // If a source location is specified, verify its local stock
+      if (receptionPoint) {
+        const [locAgg] = await WarehouseMovementModel.aggregate([
+          { $match: { rawMaterial: material._id, receptionPoint } },
+          {
+            $group: {
+              _id: null,
+              inQty:  { $sum: { $cond: [{ $eq: ["$type", "IN"]   }, "$quantity", 0] } },
+              outQty: { $sum: { $cond: [{ $in: ["$type", ["OUT", "LOSS"]] }, "$quantity", 0] } },
+            },
+          },
+        ]);
+        const locationQty = locAgg ? locAgg.inQty - locAgg.outQty : 0;
+        if (locationQty < quantity) {
+          return res.status(400).send({
+            message: `Stock insuficiente en "${receptionPoint}". Disponible: ${locationQty} ${material.unit}`,
+          });
+        }
+      } else if (material.quantity < quantity) {
         return res.status(400).send({
           message: `Insufficient stock. Available: ${material.quantity} ${material.unit}`,
         });
       }
-      // Decrement stock
       material.quantity -= quantity;
     } else if (type === "IN") {
-      // Increment stock
       material.quantity += quantity;
     } else {
       return res.status(400).send({ message: "Invalid movement type." });
     }
 
-    // 4. Save Movement and Update Material
     const movement = new WarehouseMovementModel({
       type,
       rawMaterial,
       quantity,
-      unitCost: unitCost !== undefined ? Number(unitCost) : undefined,
-      totalValue: totalValue !== undefined ? Number(totalValue) : undefined,
-      provider: type === "IN" ? provider : undefined,
-      entity: type === "OUT" ? entity : undefined,
+      unitCost:       unitCost   !== undefined ? Number(unitCost)   : undefined,
+      totalValue:     totalValue !== undefined ? Number(totalValue) : undefined,
+      provider:       type === "IN"  ? provider       : undefined,
+      entity:         type === "OUT" ? entity         : undefined,
+      receptionPoint: receptionPoint || undefined,
       user: userId,
       responsible,
       observation,
@@ -81,6 +92,41 @@ async function createMovement(req: IAuthRequest, res: Response, next: NextFuncti
   }
 }
 
+// --- Stock by location (aggregated from movements) ---
+async function getStockByLocation(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { rawMaterialId } = req.params;
+
+    if (!Types.ObjectId.isValid(rawMaterialId)) {
+      return res.status(400).send({ message: "Invalid raw material ID." });
+    }
+
+    const result = await WarehouseMovementModel.aggregate([
+      { $match: { rawMaterial: new Types.ObjectId(rawMaterialId) } },
+      {
+        $group: {
+          _id:     { $ifNull: ["$receptionPoint", "__sin_bodega__"] },
+          inQty:   { $sum: { $cond: [{ $eq: ["$type", "IN"] },             "$quantity", 0] } },
+          outQty:  { $sum: { $cond: [{ $in: ["$type", ["OUT", "LOSS"]] }, "$quantity", 0] } },
+        },
+      },
+      {
+        $project: {
+          _id: 0,
+          location: "$_id",
+          stock: { $subtract: ["$inQty", "$outQty"] },
+        },
+      },
+      { $match: { stock: { $gt: 0 }, location: { $ne: "__sin_bodega__" } } },
+      { $sort: { stock: -1 } },
+    ]);
+
+    return res.status(200).send({ data: result });
+  } catch (error) {
+    next(error);
+  }
+}
+
 // --- Get Movements (History) ---
 async function getMovements(req: Request, res: Response, next: NextFunction) {
   try {
@@ -91,20 +137,25 @@ async function getMovements(req: Request, res: Response, next: NextFunction) {
     const query: any = {};
     if (req.query.type) query.type = req.query.type;
     if (req.query.materialId) query.rawMaterial = req.query.materialId;
+    if (req.query.receptionPoint) query.receptionPoint = req.query.receptionPoint;
 
     if (req.query.startDate || req.query.endDate) {
       query.date = {};
       if (req.query.startDate) {
-        // Parse as Ecuador start of day
         query.date.$gte = new Date(`${req.query.startDate}T00:00:00-05:00`);
       }
       if (req.query.endDate) {
-        // Parse as Ecuador end of day
         query.date.$lte = new Date(`${req.query.endDate}T23:59:59-05:00`);
       }
     }
 
-    const [movements, total] = await Promise.all([
+    // Build aggregate match (same filters, but rawMaterial must be ObjectId)
+    const aggregateMatch: any = { ...query };
+    if (aggregateMatch.rawMaterial) {
+      aggregateMatch.rawMaterial = new Types.ObjectId(aggregateMatch.rawMaterial);
+    }
+
+    const [movements, total, aggregates] = await Promise.all([
       WarehouseMovementModel.find(query)
         .sort({ date: -1 })
         .skip(skip)
@@ -113,6 +164,20 @@ async function getMovements(req: Request, res: Response, next: NextFunction) {
         .populate("provider", "name")
         .populate("user", "name"),
       WarehouseMovementModel.countDocuments(query),
+      WarehouseMovementModel.aggregate([
+        { $match: aggregateMatch },
+        {
+          $group: {
+            _id: {
+              type: "$type",
+              receptionPoint: { $ifNull: ["$receptionPoint", "__sin_bodega__"] },
+            },
+            totalValue: { $sum: "$totalValue" },
+            count: { $sum: 1 },
+          },
+        },
+        { $sort: { "_id.receptionPoint": 1, "_id.type": 1 } },
+      ]),
     ]);
 
     return res.status(200).send({
@@ -120,6 +185,7 @@ async function getMovements(req: Request, res: Response, next: NextFunction) {
       total,
       page,
       pages: Math.ceil(total / limit),
+      aggregates,
     });
   } catch (error) {
     console.error("Error fetching warehouse movements:", error);
@@ -127,4 +193,4 @@ async function getMovements(req: Request, res: Response, next: NextFunction) {
   }
 }
 
-export { createMovement, getMovements };
+export { createMovement, getMovements, getStockByLocation };

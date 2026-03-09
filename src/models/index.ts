@@ -12,6 +12,7 @@ import { SupplierOrderModel } from "./supplier-order.model";
 import { GoalSettingsModel } from "./goal-settings.model";
 import { ProductionSettingsModel } from "./production-settings.model";
 import { ProviderCategoryModel } from "./provider-category.model";
+import { WarehouseSettingsModel } from "./warehouse-settings.model";
 
 export const models = {
   orders: OrderModel,
@@ -28,4 +29,5 @@ export const models = {
   goalSettings: GoalSettingsModel,
   productionSettings: ProductionSettingsModel,
   providerCategories: ProviderCategoryModel,
+  warehouseSettings: WarehouseSettingsModel,
 };
