@@ -896,6 +896,54 @@ export async function getInvoicePdf(req: AuthRequest, res: Response, next: NextF
 }
 
 /**
+ * GET /api/orders/:id/invoice/auth-status
+ * Returns the SRI authorization estado of the Contífico document.
+ */
+export async function getInvoiceAuthStatus(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    const { id } = req.params;
+    const order = await models.orders.findById(id);
+
+    if (!order || !order.invoiceInfo?.id) {
+      res.status(HttpStatusCode.NotFound).send({ message: "No invoice found for this order." });
+      return;
+    }
+
+    const estado = await contificoService.getDocumentEstado(order.invoiceInfo.id);
+    res.status(HttpStatusCode.Ok).send(estado);
+    return;
+  } catch (error: any) {
+    console.error("Error fetching invoice auth status:", error);
+    res.status(HttpStatusCode.InternalServerError).send({ message: error.message });
+    return;
+  }
+}
+
+/**
+ * POST /api/orders/:id/invoice/authorize
+ * Re-triggers sending the Contífico document to SRI for authorization.
+ */
+export async function triggerInvoiceAuth(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    const { id } = req.params;
+    const order = await models.orders.findById(id);
+
+    if (!order || !order.invoiceInfo?.id) {
+      res.status(HttpStatusCode.NotFound).send({ message: "No invoice found for this order." });
+      return;
+    }
+
+    const result = await contificoService.sendToSri(order.invoiceInfo.id);
+    res.status(HttpStatusCode.Ok).send({ message: "Autorización enviada al SRI.", result });
+    return;
+  } catch (error: any) {
+    console.error("Error triggering invoice auth:", error);
+    res.status(HttpStatusCode.InternalServerError).send({ message: error.message });
+    return;
+  }
+}
+
+/**
  * Settle an order in a physical island (Branch)
  * Marks it as settled locally and registers an 'ISLA' payment.
  */

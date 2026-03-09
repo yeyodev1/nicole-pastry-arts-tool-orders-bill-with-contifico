@@ -43,6 +43,12 @@ router.post("/:id/invoice/generate", OrderController.generateInvoice);
 // GET /api/orders/:id/invoice-pdf
 router.get("/:id/invoice-pdf", OrderController.getInvoicePdf);
 
+// GET /api/orders/:id/invoice/auth-status
+router.get("/:id/invoice/auth-status", OrderController.getInvoiceAuthStatus);
+
+// POST /api/orders/:id/invoice/authorize
+router.post("/:id/invoice/authorize", OrderController.triggerInvoiceAuth);
+
 // POST /api/orders/:id/settle-island
 router.post("/:id/settle-island", OrderController.settleOrderInIsland);
 

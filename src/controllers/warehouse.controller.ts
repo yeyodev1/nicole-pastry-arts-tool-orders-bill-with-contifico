@@ -2,6 +2,7 @@ import type { Request, Response, NextFunction } from "express";
 import { WarehouseMovementModel } from "../models/warehouse-movement.model";
 import { RawMaterialModel } from "../models/raw-material.model";
 import { Types } from "mongoose";
+import { randomUUID } from "crypto";
 
 interface IAuthRequest extends Request {
   user?: any;
@@ -193,4 +194,184 @@ async function getMovements(req: Request, res: Response, next: NextFunction) {
   }
 }
 
-export { createMovement, getMovements, getStockByLocation };
+// --- Create Batch ---
+async function createBatch(req: IAuthRequest, res: Response, next: NextFunction) {
+  try {
+    const {
+      type, date, responsible, observation, provider, invoiceRef, invoiceDueDate,
+      receptionPoint, entity, user: bodyUser, items,
+    } = req.body;
+    const userId = req.user?.id || bodyUser;
+
+    if (!userId) {
+      return res.status(401).send({ message: "User authentication required." });
+    }
+    if (!type || !items || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).send({ message: "Type and items are required." });
+    }
+    if (type === "IN" && (!invoiceRef || !invoiceDueDate)) {
+      return res.status(400).send({ message: "invoiceRef and invoiceDueDate are required for IN movements." });
+    }
+
+    const batchId = randomUUID();
+    const movementDocs: any[] = [];
+    const materialUpdates: any[] = [];
+
+    for (const item of items) {
+      const { rawMaterial: rawMaterialId, quantity, unitCost, totalValue, receptionPoint: itemReceptionPoint } = item;
+      if (!rawMaterialId || !quantity || quantity <= 0) continue;
+
+      const material = await RawMaterialModel.findById(rawMaterialId);
+      if (!material) {
+        return res.status(404).send({ message: `Raw Material ${rawMaterialId} not found.` });
+      }
+
+      const effectiveReceptionPoint = itemReceptionPoint || receptionPoint;
+
+      if (type === "OUT" || type === "LOSS") {
+        if (effectiveReceptionPoint) {
+          const [locAgg] = await WarehouseMovementModel.aggregate([
+            { $match: { rawMaterial: material._id, receptionPoint: effectiveReceptionPoint } },
+            {
+              $group: {
+                _id: null,
+                inQty:  { $sum: { $cond: [{ $eq: ["$type", "IN"] }, "$quantity", 0] } },
+                outQty: { $sum: { $cond: [{ $in: ["$type", ["OUT", "LOSS"]] }, "$quantity", 0] } },
+              },
+            },
+          ]);
+          const locationQty = locAgg ? locAgg.inQty - locAgg.outQty : 0;
+          if (locationQty < quantity) {
+            return res.status(400).send({
+              message: `Stock insuficiente en "${effectiveReceptionPoint}" para ${material.name}. Disponible: ${locationQty} ${material.unit}`,
+            });
+          }
+        } else if (material.quantity < quantity) {
+          return res.status(400).send({
+            message: `Insufficient stock for ${material.name}. Available: ${material.quantity} ${material.unit}`,
+          });
+        }
+        material.quantity -= quantity;
+      } else if (type === "IN") {
+        material.quantity += quantity;
+      }
+
+      const movement = new WarehouseMovementModel({
+        type,
+        rawMaterial: rawMaterialId,
+        quantity,
+        unitCost:       unitCost   !== undefined ? Number(unitCost)   : undefined,
+        totalValue:     totalValue !== undefined ? Number(totalValue) : undefined,
+        provider:       type === "IN"  ? provider       : undefined,
+        entity:         type === "OUT" ? entity         : undefined,
+        receptionPoint: effectiveReceptionPoint || undefined,
+        user: userId,
+        responsible,
+        observation,
+        date: date ? new Date(date) : new Date(),
+        invoiceRef:     type === "IN" ? invoiceRef     : undefined,
+        invoiceDueDate: type === "IN" ? invoiceDueDate : undefined,
+        isPaid: false,
+        batchId,
+      });
+
+      movementDocs.push(movement);
+      materialUpdates.push(material);
+    }
+
+    await Promise.all([
+      ...movementDocs.map(m => m.save()),
+      ...materialUpdates.map(m => m.save()),
+    ]);
+
+    return res.status(201).send({
+      batchId,
+      movements: movementDocs,
+      count: movementDocs.length,
+    });
+  } catch (error) {
+    console.error("Error creating batch warehouse movements:", error);
+    next(error);
+  }
+}
+
+// --- Get Invoices ---
+async function getInvoices(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { paid } = req.query;
+    const matchStage: any = {
+      type: "IN",
+      invoiceRef: { $exists: true, $ne: null },
+    };
+    if (paid === "true") matchStage.isPaid = true;
+    else if (paid === "false") matchStage.isPaid = false;
+
+    const result = await WarehouseMovementModel.aggregate([
+      { $match: matchStage },
+      {
+        $group: {
+          _id: "$invoiceRef",
+          invoiceDueDate: { $first: "$invoiceDueDate" },
+          isPaid:         { $first: "$isPaid" },
+          provider:       { $first: "$provider" },
+          totalValue:     { $sum: "$totalValue" },
+          count:          { $sum: 1 },
+          rawMaterials:   { $addToSet: "$rawMaterial" },
+          batchId:        { $first: "$batchId" },
+        },
+      },
+      {
+        $lookup: {
+          from: "rawmaterials",
+          localField: "rawMaterials",
+          foreignField: "_id",
+          as: "materialDocs",
+        },
+      },
+      {
+        $lookup: {
+          from: "providers",
+          localField: "provider",
+          foreignField: "_id",
+          as: "providerDocs",
+        },
+      },
+      {
+        $addFields: {
+          materials: "$materialDocs.name",
+          provider: { $arrayElemAt: ["$providerDocs", 0] },
+        },
+      },
+      {
+        $project: {
+          rawMaterials: 0,
+          materialDocs: 0,
+          providerDocs: 0,
+        },
+      },
+      { $sort: { invoiceDueDate: 1 } },
+    ]);
+
+    return res.status(200).send({ data: result });
+  } catch (error) {
+    console.error("Error fetching invoices:", error);
+    next(error);
+  }
+}
+
+// --- Mark Invoice Paid ---
+async function markInvoicePaid(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { invoiceRef } = req.params;
+    const result = await WarehouseMovementModel.updateMany(
+      { invoiceRef, type: "IN" },
+      { $set: { isPaid: true } }
+    );
+    return res.status(200).send({ modifiedCount: result.modifiedCount });
+  } catch (error) {
+    console.error("Error marking invoice as paid:", error);
+    next(error);
+  }
+}
+
+export { createMovement, getMovements, getStockByLocation, createBatch, getInvoices, markInvoicePaid };

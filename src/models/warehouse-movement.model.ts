@@ -13,6 +13,10 @@ export interface IWarehouseMovement extends Document {
   user: Types.ObjectId;
   responsible?: string; // Who received or delivered
   observation?: string;
+  invoiceRef?: string;
+  invoiceDueDate?: Date;
+  isPaid?: boolean;
+  batchId?: string;
 }
 
 const WarehouseMovementSchema = new Schema<IWarehouseMovement>(
@@ -73,6 +77,10 @@ const WarehouseMovementSchema = new Schema<IWarehouseMovement>(
       type: String,
       trim: true,
     },
+    invoiceRef:     { type: String, trim: true, index: true },
+    invoiceDueDate: { type: Date },
+    isPaid:         { type: Boolean, default: false },
+    batchId:        { type: String, trim: true, index: true },
   },
   {
     timestamps: true,
