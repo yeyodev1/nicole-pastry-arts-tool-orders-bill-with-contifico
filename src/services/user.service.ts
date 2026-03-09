@@ -126,6 +126,12 @@ export class UserService {
         name: "Supply Chain Manager",
         role: "SUPPLY_CHAIN_MANAGER",
       },
+      {
+        email: "cocina@nicole.com.ec",
+        password: "Nicole2020!",
+        name: "Pantalla Cocina",
+        role: "KITCHEN_DISPLAY",
+      },
     ];
 
 
