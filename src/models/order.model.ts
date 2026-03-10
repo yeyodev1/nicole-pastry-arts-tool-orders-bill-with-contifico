@@ -76,6 +76,8 @@ export interface IOrder extends Document {
   settledIslandName?: string;
   globalDiscountPercentage: number;
   isGlobalCourtesy: boolean;
+  skipProduction: boolean;
+  exitPoint?: string;
 
   // Dispatch Fields
   dispatches: IDispatch[];
@@ -209,6 +211,8 @@ const OrderSchema = new Schema<IOrder>(
     settledIslandName: { type: String },
     globalDiscountPercentage: { type: Number, default: 0 },
     isGlobalCourtesy: { type: Boolean, default: false },
+    skipProduction: { type: Boolean, default: false },
+    exitPoint: { type: String, default: '' },
 
     // Dispatch Fields
     dispatches: { type: [DispatchSchema], default: [] },

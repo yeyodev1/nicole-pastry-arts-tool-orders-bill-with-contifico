@@ -66,6 +66,11 @@ export async function createOrder(req: AuthRequest, res: Response, next: NextFun
     if (!orderData.salesChannel) orderData.salesChannel = "Web";
     if (!orderData.paymentMethod) orderData.paymentMethod = "Por confirmar";
 
+    // Si es retiro directo de tienda, marcar como finalizado en producción
+    if (orderData.skipProduction === true) {
+      orderData.productionStage = "FINISHED";
+    }
+
     // Handle Settlement in Island during creation
     if (orderData.settledInIsland && orderData.settledIslandName) {
       orderData.paymentMethod = `Isla: ${orderData.settledIslandName}`;
@@ -161,7 +166,9 @@ export async function createOrder(req: AuthRequest, res: Response, next: NextFun
     // Construct "Type of Order" string
     // e.g. "Delivery saliendo de Ceibos" or "Retiro en local - San Marino"
     let typeOfOrder = "";
-    if (orderData.deliveryType === 'retiro') {
+    if (orderData.skipProduction) {
+      typeOfOrder = `Retiro directo de tienda - ${orderData.exitPoint || orderData.branch || 'S/N'}`;
+    } else if (orderData.deliveryType === 'retiro') {
       typeOfOrder = `Retiro en local - ${orderData.branch || 'S/N'}`;
     } else {
       typeOfOrder = `Delivery saliendo de - ${orderData.branch || 'S/N'}`;
