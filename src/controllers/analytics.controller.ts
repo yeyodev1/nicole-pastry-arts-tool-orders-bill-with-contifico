@@ -277,6 +277,11 @@ export async function getSalesByResponsible(req: AuthRequest, res: Response, nex
       { threshold: 13000, rate: 6 }
     ];
 
+    // Exclude non-sales users (admins, production, etc.) from stats
+    const NON_SALES_ROLES = ['admin', 'production', 'SUPPLY_CHAIN_MANAGER', 'KITCHEN_DISPLAY'];
+    const nonSalesUsers = await models.users.find({ role: { $in: NON_SALES_ROLES } }).lean();
+    const excludedNames = new Set(nonSalesUsers.map((u: any) => u.name.toLowerCase()));
+
     const stats = await models.orders.aggregate([
       {
         $match: orderMatch
@@ -334,8 +339,11 @@ export async function getSalesByResponsible(req: AuthRequest, res: Response, nex
       };
     });
 
+    // Filter out non-sales users (admins, etc.) — their orders shouldn't pollute sales stats
+    const filteredStats = enhancedStats.filter(s => !excludedNames.has((s._id || '').toLowerCase()));
+
     // Calculate the number of actual salespeople for the dynamic goal (exclude Digital/Web)
-    const activeSalespeopleCount = enhancedStats.filter(s => s.role !== 'Digital').length;
+    const activeSalespeopleCount = filteredStats.filter(s => s.role !== 'Digital').length;
 
     res.status(HttpStatusCode.Ok).send({
       message: "Sales by responsible retrieved successfully.",
@@ -345,7 +353,7 @@ export async function getSalesByResponsible(req: AuthRequest, res: Response, nex
       },
       monthlyGoal: 10000 * Math.max(1, activeSalespeopleCount),
       commissionTiers,
-      stats: enhancedStats
+      stats: filteredStats
     });
     return;
   } catch (error) {

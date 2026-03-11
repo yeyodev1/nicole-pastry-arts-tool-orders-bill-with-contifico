@@ -285,7 +285,11 @@ export async function getOrders(req: AuthRequest, res: Response, next: NextFunct
 
     // 3. Invoice Status Filter (ERROR, PENDING, PROCESSED)
     if (req.query.invoiceStatus) {
-      query.invoiceStatus = req.query.invoiceStatus;
+      if (req.query.invoiceStatus === 'UNBILLED') {
+        query.invoiceStatus = { $ne: 'PROCESSED' };
+      } else {
+        query.invoiceStatus = req.query.invoiceStatus;
+      }
     }
 
     // 4. Dispatch Status Filter (e.g. RETURNED)
