@@ -35,7 +35,7 @@ router.post("/batch-invoice", OrderController.processPendingInvoices);
 router.put("/:id/invoice", OrderController.updateInvoiceData);
 
 // POST /api/orders/:id/collection
-router.post("/:id/collection", OrderController.registerCollection);
+router.post("/:id/collection", authMiddleware as any, OrderController.registerCollection);
 
 // POST /api/orders/:id/invoice/generate
 router.post("/:id/invoice/generate", OrderController.generateInvoice);
@@ -53,7 +53,7 @@ router.post("/:id/invoice/authorize", OrderController.triggerInvoiceAuth);
 router.post("/:id/settle-island", OrderController.settleOrderInIsland);
 
 // PUT /api/orders/:id/return
-router.put("/:id/return", OrderController.returnOrder);
+router.put("/:id/return", authMiddleware as any, OrderController.returnOrder);
 
 // DELETE /api/orders/:id
 router.delete("/:id", OrderController.deleteOrder);

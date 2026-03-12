@@ -1,5 +1,11 @@
 import { Schema, model, Document, Types } from "mongoose";
 
+export interface IRawMaterialProvider {
+  provider: Types.ObjectId;
+  price: number;
+  isMain: boolean;
+}
+
 // Interface for Raw Material
 export interface IRawMaterial extends Document {
   name: string;
@@ -7,11 +13,12 @@ export interface IRawMaterial extends Document {
   code?: string; // Generated SKU/Code
   unit: "g" | "ml" | "u";
   quantity: number;
-  cost: number; // Unit cost (auto-calculated)
+  cost: number; // Unit cost (auto-calculated from main provider)
   wastePercentage: number; // 0-100%
   minStock: number;
   maxStock: number;
-  provider?: Types.ObjectId;
+  provider?: Types.ObjectId; // Kept for BC, synced with isMain provider
+  providers: IRawMaterialProvider[];
   category?: string;
 
   // Professional Presentation Fields
@@ -78,6 +85,13 @@ const RawMaterialSchema = new Schema<IRawMaterial>(
       type: Schema.Types.ObjectId,
       ref: "Provider",
     },
+    providers: [
+      {
+        provider: { type: Schema.Types.ObjectId, ref: "Provider", required: true },
+        price: { type: Number, required: true, default: 0 },
+        isMain: { type: Boolean, required: true, default: false },
+      }
+    ],
     category: {
       type: String,
       required: false,

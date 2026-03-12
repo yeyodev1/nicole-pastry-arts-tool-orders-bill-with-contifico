@@ -22,7 +22,11 @@ export async function getRawMaterials(req: Request, res: Response, next: NextFun
     if (category) query.category = String(category);
 
     // Initial fetch of materials based on base filters
-    let materials: any[] = await models.rawMaterials.find(query).populate('provider').sort({ name: 1 }).lean();
+    let materials: any[] = await models.rawMaterials.find(query)
+      .populate('provider')
+      .populate('providers.provider')
+      .sort({ name: 1 })
+      .lean();
 
     // If receptionPoint is provided, filter materials by calculating local stock
     if (receptionPoint) {
@@ -75,9 +79,20 @@ export async function getRawMaterials(req: Request, res: Response, next: NextFun
   }
 }
 
+function syncProviderAndCost(materialData: any) {
+  if (materialData.providers && Array.isArray(materialData.providers)) {
+    const main = materialData.providers.find((p: any) => p.isMain);
+    if (main) {
+      materialData.provider = main.provider;
+      materialData.cost = main.price;
+    }
+  }
+  return materialData;
+}
+
 export async function createRawMaterial(req: Request, res: Response, next: NextFunction) {
   try {
-    const materialData = req.body;
+    let materialData = req.body;
 
     if (!materialData.name || !materialData.unit) {
       res.status(HttpStatusCode.BadRequest).send({
@@ -93,6 +108,8 @@ export async function createRawMaterial(req: Request, res: Response, next: NextF
       });
       return;
     }
+
+    materialData = syncProviderAndCost(materialData);
 
     const newMaterial = new models.rawMaterials(materialData);
     await newMaterial.save();
@@ -115,7 +132,9 @@ export async function createRawMaterial(req: Request, res: Response, next: NextF
 export async function updateRawMaterial(req: Request, res: Response, next: NextFunction) {
   try {
     const { id } = req.params;
-    const updateData = req.body;
+    let updateData = req.body;
+
+    updateData = syncProviderAndCost(updateData);
 
     const material = await models.rawMaterials.findByIdAndUpdate(id, updateData, { new: true });
     if (!material) {
