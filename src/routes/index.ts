@@ -15,6 +15,7 @@ import SupplierOrderRouter from "./supplier-order.router";
 import GoalSettingsRouter from "./goal-settings.router";
 import ProductionSettingsRouter from "./production-settings.router";
 import ProviderCategoryRouter from "./provider-category.router";
+import WarehouseSettingsRouter from "./warehouse-settings.router";
 
 import { WarehouseRouter } from "./warehouse.routes";
 
@@ -36,6 +37,7 @@ function routerApi(app: Application) {
   router.use("/supplier-orders", SupplierOrderRouter);
   router.use("/settings/goals", GoalSettingsRouter);
   router.use("/settings/production", ProductionSettingsRouter);
+  router.use("/settings/warehouse", WarehouseSettingsRouter);
 
   router.use("/provider-categories", ProviderCategoryRouter);
   router.use("/warehouse", WarehouseRouter);

@@ -1,11 +1,13 @@
 import type { Request, Response, NextFunction } from "express";
 import { HttpStatusCode } from "axios";
 import { models } from "../models";
+import { WarehouseMovementModel } from "../models/warehouse-movement.model";
+import { Types } from "mongoose";
 
 export async function getRawMaterials(req: Request, res: Response, next: NextFunction) {
   try {
     let query: any = {};
-    const { search, provider, category } = req.query;
+    const { search, provider, category, receptionPoint } = req.query;
 
     if (search) {
       const searchRegex = new RegExp(String(search), 'i');
@@ -19,7 +21,45 @@ export async function getRawMaterials(req: Request, res: Response, next: NextFun
     if (provider) query.provider = provider;
     if (category) query.category = String(category);
 
-    const materials = await models.rawMaterials.find(query).populate('provider').sort({ name: 1 });
+    // Initial fetch of materials based on base filters
+    let materials: any[] = await models.rawMaterials.find(query).populate('provider').sort({ name: 1 }).lean();
+
+    // If receptionPoint is provided, filter materials by calculating local stock
+    if (receptionPoint) {
+      const materialIds = materials.map(m => new Types.ObjectId(m._id as string));
+
+      // Calculate stock for the specified reception point
+      const stockAgg = await WarehouseMovementModel.aggregate([
+        {
+          $match: {
+            rawMaterial: { $in: materialIds },
+            receptionPoint: String(receptionPoint)
+          }
+        },
+        {
+          $group: {
+            _id: "$rawMaterial",
+            inQty: { $sum: { $cond: [{ $eq: ["$type", "IN"] }, "$quantity", 0] } },
+            outQty: { $sum: { $cond: [{ $in: ["$type", ["OUT", "LOSS"]] }, "$quantity", 0] } }
+          }
+        }
+      ]);
+
+      const stockMap = new Map();
+      stockAgg.forEach(item => {
+        stockMap.set(item._id.toString(), item.inQty - item.outQty);
+      });
+
+      // Update material quantities to reflect only the stock at the point
+      materials = materials.map(m => {
+        const localStock = stockMap.get(m._id.toString()) || 0;
+        return {
+          ...m,
+          quantity: localStock // Override global quantity with local stock
+        };
+      });
+    }
+
     res.status(HttpStatusCode.Ok).send({
       message: "Raw materials retrieved successfully.",
       data: materials

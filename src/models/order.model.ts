@@ -59,6 +59,14 @@ export interface IOrder extends Document {
   paymentMethod: string;
   invoiceNeeded: boolean;
   responsible: string;
+  createdBy: string;
+  updatedBy: string;
+  auditLog: Array<{
+    user: string;
+    action: string;
+    at: Date;
+    details?: string;
+  }>;
   comments?: string;
   invoiceData?: {
     ruc: string;
@@ -76,6 +84,8 @@ export interface IOrder extends Document {
   settledIslandName?: string;
   globalDiscountPercentage: number;
   isGlobalCourtesy: boolean;
+  skipProduction: boolean;
+  exitPoint?: string;
 
   // Dispatch Fields
   dispatches: IDispatch[];
@@ -188,6 +198,16 @@ const OrderSchema = new Schema<IOrder>(
       type: String,
       required: true,
     },
+    createdBy: { type: String },
+    updatedBy: { type: String },
+    auditLog: [
+      {
+        user: { type: String },
+        action: { type: String },
+        at: { type: Date, default: Date.now },
+        details: { type: String }
+      }
+    ],
     comments: { type: String },
     invoiceData: {
       ruc: { type: String },
@@ -209,6 +229,8 @@ const OrderSchema = new Schema<IOrder>(
     settledIslandName: { type: String },
     globalDiscountPercentage: { type: Number, default: 0 },
     isGlobalCourtesy: { type: Boolean, default: false },
+    skipProduction: { type: Boolean, default: false },
+    exitPoint: { type: String, default: '' },
 
     // Dispatch Fields
     dispatches: { type: [DispatchSchema], default: [] },

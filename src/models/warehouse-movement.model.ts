@@ -8,10 +8,15 @@ export interface IWarehouseMovement extends Document {
   totalValue?: number; // Pre-computed total (USD) = qty_display * unitCost_display
   date: Date;
   provider?: Types.ObjectId; // For IN
-  entity?: string; // For OUT
+  receptionPoint?: string; // For IN — warehouse/location receiving the goods
+  entity?: string; // For OUT — dispatch destination
   user: Types.ObjectId;
   responsible?: string; // Who received or delivered
   observation?: string;
+  invoiceRef?: string;
+  invoiceDueDate?: Date;
+  isPaid?: boolean;
+  batchId?: string;
 }
 
 const WarehouseMovementSchema = new Schema<IWarehouseMovement>(
@@ -51,17 +56,13 @@ const WarehouseMovementSchema = new Schema<IWarehouseMovement>(
       type: Schema.Types.ObjectId,
       ref: "Provider",
     },
+    receptionPoint: {
+      type: String,
+      trim: true,
+    },
     entity: {
       type: String,
-      enum: [
-        "Nicole Pastry Arts - San marino",
-        "Nicole Pastry Arts - Mall del sol",
-        "Finestra - CDP",
-        "Delacrem - Mall del sol",
-        "Casa mía - Mall del sol",
-        "Sucreenda - CDP",
-        "Sucree - Vivantino",
-      ],
+      trim: true,
     },
     user: {
       type: Schema.Types.ObjectId,
@@ -76,6 +77,10 @@ const WarehouseMovementSchema = new Schema<IWarehouseMovement>(
       type: String,
       trim: true,
     },
+    invoiceRef:     { type: String, trim: true, index: true },
+    invoiceDueDate: { type: Date },
+    isPaid:         { type: Boolean, default: false },
+    batchId:        { type: String, trim: true, index: true },
   },
   {
     timestamps: true,

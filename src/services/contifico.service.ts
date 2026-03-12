@@ -543,6 +543,22 @@ export class ContificoService {
   }
 
   /**
+   * Get SRI authorization status for an electronic document
+   * @param documentId The Contífico Document ID
+   */
+  async getDocumentEstado(documentId: string) {
+    try {
+      const response = await axios.get(`${this.baseUrl}/documento/${documentId}/estado/`, {
+        headers: { Authorization: this.apiKey }
+      });
+      return response.data; // { documento_id, tipo_registro, tipo_documento, estado }
+    } catch (error: any) {
+      console.error("❌ Error fetching document estado:", error.response?.data || error.message);
+      throw new Error(error.response?.data?.mensaje || "Failed to fetch document estado");
+    }
+  }
+
+  /**
    * Get stock per warehouse for a specific product
    * @param productId The Contífico Product ID
    */

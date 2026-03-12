@@ -5,7 +5,7 @@ export interface IUser extends Document {
   name: string;
   email: string;
   password?: string; // Optional because we might auto-generate or use other auth methods later
-  role: "admin" | "sales" | "production" | "RetailManager" | "SUPPLY_CHAIN_MANAGER" | "SALES_MANAGER" | "SALES_REP";
+  role: "admin" | "sales" | "production" | "RetailManager" | "SUPPLY_CHAIN_MANAGER" | "SALES_MANAGER" | "SALES_REP" | "KITCHEN_DISPLAY";
 }
 
 // User Schema
@@ -27,7 +27,7 @@ const UserSchema = new Schema<IUser>(
     },
     role: {
       type: String,
-      enum: ["admin", "sales", "production", "RetailManager", "SUPPLY_CHAIN_MANAGER", "SALES_MANAGER", "SALES_REP"],
+      enum: ["admin", "sales", "production", "RetailManager", "SUPPLY_CHAIN_MANAGER", "SALES_MANAGER", "SALES_REP", "KITCHEN_DISPLAY"],
       default: "sales",
     },
   },

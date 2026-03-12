@@ -78,12 +78,25 @@ export class ProductionService {
     return orders;
   }
 
-  async updateTask(id: string, updates: { stage?: string; notes?: string }) {
-    const updateData: any = {};
-    if (updates.stage) updateData.productionStage = updates.stage;
-    if (updates.notes !== undefined) updateData.productionNotes = updates.notes;
+  async updateTask(id: string, updates: { stage?: string; notes?: string }, user?: string) {
+    const order = await OrderModel.findById(id);
+    if (!order) return null;
 
-    return await OrderModel.findByIdAndUpdate(id, updateData, { new: true });
+    const oldStage = order.productionStage;
+    if (updates.stage) order.productionStage = updates.stage as any;
+    if (updates.notes !== undefined) order.productionNotes = updates.notes;
+
+    // Audit Log for production stage change
+    if (updates.stage && updates.stage !== oldStage) {
+      order.auditLog.push({
+        user: user || "Producción",
+        action: "Etapa de Producción Actualizada",
+        at: new Date(),
+        details: `Pedido pasó de ${oldStage} a ${updates.stage}.`
+      });
+    }
+
+    return await order.save();
   }
 
   /**
@@ -371,13 +384,14 @@ export class ProductionService {
     };
   }
 
-  async updateProductStatus(orderId: string, productName: string, status: "PENDING" | "IN_PROCESS" | "COMPLETED", notes?: string) {
+  async updateProductStatus(orderId: string, productName: string, status: "PENDING" | "IN_PROCESS" | "COMPLETED", notes?: string, user?: string) {
     const order = await OrderModel.findById(orderId);
     if (!order) return null;
 
     const product = order.products.find(p => p.name === productName);
     if (!product) return null;
 
+    const oldStatus = product.productionStatus;
     if (status) product.productionStatus = status;
     if (notes !== undefined) product.productionNotes = notes;
 
@@ -388,6 +402,7 @@ export class ProductionService {
     }
 
     // Recalculate Order Stage
+    const oldOrderStage = order.productionStage;
     const allProductsDone = order.products.every(p => p.productionStatus === "COMPLETED" || (p.produced || 0) >= p.quantity);
     if (allProductsDone) {
       order.productionStage = "FINISHED";
@@ -397,6 +412,25 @@ export class ProductionService {
       if (anyAction && order.productionStage === "PENDING") {
         order.productionStage = "IN_PROCESS";
       }
+    }
+
+    // Audit Log for production progress
+    if (status && status !== oldStatus) {
+      order.auditLog.push({
+        user: user || "Producción",
+        action: "Estado de Producto Actualizado",
+        at: new Date(),
+        details: `${productName}: de ${oldStatus} a ${status}.`
+      });
+    }
+
+    if (order.productionStage !== oldOrderStage) {
+      order.auditLog.push({
+        user: user || "Producción",
+        action: "Etapa de Producción Actualizada",
+        at: new Date(),
+        details: `Pedido pasó de ${oldOrderStage} a ${order.productionStage} por avance en productos.`
+      });
     }
 
     await order.save();
@@ -575,6 +609,14 @@ export class ProductionService {
 
     order.dispatches.push(newDispatch);
 
+    // Audit Log for Dispatch
+    order.auditLog.push({
+      user: dispatchData.reportedBy || "Sistema",
+      action: "Despacho Registrado",
+      at: new Date(),
+      details: `Despacho con destino a: ${dispatchData.destination}.`
+    });
+
     // Recalculate global dispatch status
     this.recalculateDispatchStatus(order);
 
@@ -608,6 +650,14 @@ export class ProductionService {
 
     // Recalculate Status
     this.recalculateDispatchStatus(order);
+
+    // Audit Log for Dispatch Update
+    order.auditLog.push({
+      user: dispatch.reportedBy || "Sistema",
+      action: "Despacho Actualizado",
+      at: new Date(),
+      details: `Se actualizaron datos del despacho a ${dispatch.destination}.`
+    });
 
     return await order.save();
   }
@@ -955,6 +1005,14 @@ export class ProductionService {
 
     const returnLog = `\n[DEVOLUCIÓN ${new Date().toLocaleString('es-EC')} por ${returnData.reportedBy}]: ${returnData.notes}`;
     order.comments = (order.comments || "") + returnLog;
+
+    // Audit Log for Return
+    order.auditLog.push({
+      user: returnData.reportedBy || "Sistema",
+      action: "Pedido Devuelto",
+      at: new Date(),
+      details: `Motivo: ${returnData.notes}`
+    });
 
     return await order.save();
   }

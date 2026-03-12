@@ -20,7 +20,7 @@ router.get("/reports/delivery", OrderController.getDeliveryReport);
 router.get("/:id", OrderController.getOrderById);
 
 // PUT /api/orders/:id
-router.put("/:id", OrderController.updateOrder);
+router.put("/:id", authMiddleware as any, OrderController.updateOrder);
 
 // POST /api/orders/bulk-assign
 router.post("/bulk-assign", OrderController.bulkAssignOrders);
@@ -42,6 +42,12 @@ router.post("/:id/invoice/generate", OrderController.generateInvoice);
 
 // GET /api/orders/:id/invoice-pdf
 router.get("/:id/invoice-pdf", OrderController.getInvoicePdf);
+
+// GET /api/orders/:id/invoice/auth-status
+router.get("/:id/invoice/auth-status", OrderController.getInvoiceAuthStatus);
+
+// POST /api/orders/:id/invoice/authorize
+router.post("/:id/invoice/authorize", OrderController.triggerInvoiceAuth);
 
 // POST /api/orders/:id/settle-island
 router.post("/:id/settle-island", OrderController.settleOrderInIsland);

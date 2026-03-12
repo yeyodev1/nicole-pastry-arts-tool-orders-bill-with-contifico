@@ -31,6 +31,16 @@ export async function createOrder(req: AuthRequest, res: Response, next: NextFun
     // Fallback if no user (should not happen with authMiddleware)
     if (!orderData.responsible) orderData.responsible = "Web";
 
+    // Audit Fields
+    orderData.createdBy = currentUser?.name || currentUser?.email || "Web";
+    orderData.updatedBy = orderData.createdBy;
+    orderData.auditLog = [{
+      user: orderData.createdBy,
+      action: "Pedido Creado",
+      at: new Date(),
+      details: "Creación inicial del pedido."
+    }];
+
     // 1. Basic Validation
     if (!orderData.customerName || !orderData.products || orderData.products.length === 0) {
       res.status(HttpStatusCode.BadRequest).send({
@@ -65,6 +75,11 @@ export async function createOrder(req: AuthRequest, res: Response, next: NextFun
     if (!orderData.orderDate) orderData.orderDate = new Date();
     if (!orderData.salesChannel) orderData.salesChannel = "Web";
     if (!orderData.paymentMethod) orderData.paymentMethod = "Por confirmar";
+
+    // Si es retiro directo de tienda, marcar como finalizado en producción
+    if (orderData.skipProduction === true) {
+      orderData.productionStage = "FINISHED";
+    }
 
     // Handle Settlement in Island during creation
     if (orderData.settledInIsland && orderData.settledIslandName) {
@@ -161,7 +176,9 @@ export async function createOrder(req: AuthRequest, res: Response, next: NextFun
     // Construct "Type of Order" string
     // e.g. "Delivery saliendo de Ceibos" or "Retiro en local - San Marino"
     let typeOfOrder = "";
-    if (orderData.deliveryType === 'retiro') {
+    if (orderData.skipProduction) {
+      typeOfOrder = `Retiro directo de tienda - ${orderData.exitPoint || orderData.branch || 'S/N'}`;
+    } else if (orderData.deliveryType === 'retiro') {
       typeOfOrder = `Retiro en local - ${orderData.branch || 'S/N'}`;
     } else {
       typeOfOrder = `Delivery saliendo de - ${orderData.branch || 'S/N'}`;
@@ -278,7 +295,11 @@ export async function getOrders(req: AuthRequest, res: Response, next: NextFunct
 
     // 3. Invoice Status Filter (ERROR, PENDING, PROCESSED)
     if (req.query.invoiceStatus) {
-      query.invoiceStatus = req.query.invoiceStatus;
+      if (req.query.invoiceStatus === 'UNBILLED') {
+        query.invoiceStatus = { $ne: 'PROCESSED' };
+      } else {
+        query.invoiceStatus = req.query.invoiceStatus;
+      }
     }
 
     // 4. Dispatch Status Filter (e.g. RETURNED)
@@ -559,6 +580,7 @@ export async function updateOrder(req: AuthRequest, res: Response, next: NextFun
   try {
     const { id } = req.params;
     const updateData = req.body;
+    const currentUser = req.user;
 
     const order = await models.orders.findById(id);
 
@@ -602,6 +624,17 @@ export async function updateOrder(req: AuthRequest, res: Response, next: NextFun
     // Settlement updates
     if (updateData.settledInIsland !== undefined) order.settledInIsland = updateData.settledInIsland;
     if (updateData.settledIslandName) order.settledIslandName = updateData.settledIslandName;
+
+    // Audit for update
+    if (currentUser) {
+      order.updatedBy = currentUser.name || currentUser.email;
+      order.auditLog.push({
+        user: order.updatedBy,
+        action: "Pedido Actualizado",
+        at: new Date(),
+        details: "Se actualizaron campos del pedido."
+      });
+    }
 
     await order.save();
 
@@ -699,6 +732,16 @@ export async function registerCollection(req: AuthRequest, res: Response, next: 
       fecha: new Date(),
       status: 'PAID'
     });
+
+    // Audit Log for Payment
+    if (req.user) {
+      order.auditLog.push({
+        user: req.user.name || req.user.email,
+        action: "Pago Registrado",
+        at: new Date(),
+        details: `Se registró un pago de $${collectionData.monto} via ${collectionData.forma_cobro}.`
+      });
+    }
 
     // Also update top-level paymentMethod string if coming from UI mapping
     if (collectionData.forma_cobro) {
@@ -891,6 +934,54 @@ export async function getInvoicePdf(req: AuthRequest, res: Response, next: NextF
       message: "Failed to fetch invoice PDF",
       error: error.message
     });
+    return;
+  }
+}
+
+/**
+ * GET /api/orders/:id/invoice/auth-status
+ * Returns the SRI authorization estado of the Contífico document.
+ */
+export async function getInvoiceAuthStatus(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    const { id } = req.params;
+    const order = await models.orders.findById(id);
+
+    if (!order || !order.invoiceInfo?.id) {
+      res.status(HttpStatusCode.NotFound).send({ message: "No invoice found for this order." });
+      return;
+    }
+
+    const estado = await contificoService.getDocumentEstado(order.invoiceInfo.id);
+    res.status(HttpStatusCode.Ok).send(estado);
+    return;
+  } catch (error: any) {
+    console.error("Error fetching invoice auth status:", error);
+    res.status(HttpStatusCode.InternalServerError).send({ message: error.message });
+    return;
+  }
+}
+
+/**
+ * POST /api/orders/:id/invoice/authorize
+ * Re-triggers sending the Contífico document to SRI for authorization.
+ */
+export async function triggerInvoiceAuth(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    const { id } = req.params;
+    const order = await models.orders.findById(id);
+
+    if (!order || !order.invoiceInfo?.id) {
+      res.status(HttpStatusCode.NotFound).send({ message: "No invoice found for this order." });
+      return;
+    }
+
+    const result = await contificoService.sendToSri(order.invoiceInfo.id);
+    res.status(HttpStatusCode.Ok).send({ message: "Autorización enviada al SRI.", result });
+    return;
+  } catch (error: any) {
+    console.error("Error triggering invoice auth:", error);
+    res.status(HttpStatusCode.InternalServerError).send({ message: error.message });
     return;
   }
 }
