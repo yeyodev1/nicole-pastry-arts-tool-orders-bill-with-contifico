@@ -59,6 +59,14 @@ export interface IOrder extends Document {
   paymentMethod: string;
   invoiceNeeded: boolean;
   responsible: string;
+  createdBy: string;
+  updatedBy: string;
+  auditLog: Array<{
+    user: string;
+    action: string;
+    at: Date;
+    details?: string;
+  }>;
   comments?: string;
   invoiceData?: {
     ruc: string;
@@ -190,6 +198,16 @@ const OrderSchema = new Schema<IOrder>(
       type: String,
       required: true,
     },
+    createdBy: { type: String },
+    updatedBy: { type: String },
+    auditLog: [
+      {
+        user: { type: String },
+        action: { type: String },
+        at: { type: Date, default: Date.now },
+        details: { type: String }
+      }
+    ],
     comments: { type: String },
     invoiceData: {
       ruc: { type: String },

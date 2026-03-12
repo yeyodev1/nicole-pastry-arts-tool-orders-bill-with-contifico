@@ -20,7 +20,7 @@ router.get("/reports/delivery", OrderController.getDeliveryReport);
 router.get("/:id", OrderController.getOrderById);
 
 // PUT /api/orders/:id
-router.put("/:id", OrderController.updateOrder);
+router.put("/:id", authMiddleware as any, OrderController.updateOrder);
 
 // POST /api/orders/bulk-assign
 router.post("/bulk-assign", OrderController.bulkAssignOrders);
