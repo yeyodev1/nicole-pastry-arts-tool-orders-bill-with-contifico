@@ -73,10 +73,13 @@ export interface IOrder extends Document {
     businessName: string;
     email: string;
     address: string;
+    personType?: 'natural' | 'juridica';
   };
   invoiceStatus?: "PENDING" | "PROCESSED" | "ERROR";
   invoiceError?: string;
   invoiceInfo?: any;
+  invoiceSentToSriAt?: Date;
+  contificoSource?: 'nicole' | 'sucree';
   productionStage: "PENDING" | "IN_PROCESS" | "FINISHED" | "DELAYED" | "VOID";
   productionNotes: string;
   voidedAt: Date | null;
@@ -214,8 +217,11 @@ const OrderSchema = new Schema<IOrder>(
       businessName: { type: String },
       email: { type: String },
       address: { type: String },
+      personType: { type: String, enum: ['natural', 'juridica'] },
     },
     invoiceInfo: { type: Schema.Types.Mixed },
+    invoiceSentToSriAt: { type: Date, default: undefined },
+    contificoSource: { type: String, enum: ['nicole', 'sucree'], default: 'nicole' },
 
     // Production Fields
     productionStage: {

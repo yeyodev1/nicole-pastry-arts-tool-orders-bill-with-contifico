@@ -5,7 +5,39 @@ import { ContificoService } from "../services/contifico.service";
 import { getECDateRange } from "../utils/date.utils";
 import { AuthRequest } from "../types/AuthRequest";
 
-const contificoService = new ContificoService();
+const nicoleContificoService = new ContificoService('nicole');
+const sucreeContificoService = new ContificoService('sucree');
+
+/** Pick the right Contifico account based on the order's stored source. */
+const getContificoService = (source?: string) =>
+  source === 'sucree' ? sucreeContificoService : nicoleContificoService;
+
+/**
+ * Runs an invoice operation with the correct Contifico account.
+ * If the service rejects with "no pertenece a la empresa" (wrong company),
+ * auto-retries with the alternate service and persists the correct source on the order.
+ */
+async function withCorrectService<T>(
+  orderId: string,
+  storedSource: string | undefined,
+  operation: (svc: ContificoService) => Promise<T>
+): Promise<T> {
+  const primarySvc = getContificoService(storedSource);
+  try {
+    return await operation(primarySvc);
+  } catch (error: any) {
+    const msg: string = error.message || String(error);
+    if (msg.includes('no pertenece a la empresa')) {
+      const alternateSvc = primarySvc.source === 'sucree' ? nicoleContificoService : sucreeContificoService;
+      console.log(`ℹ️ [${orderId}] ${primarySvc.source} rechazó el documento, reintentando con ${alternateSvc.source}...`);
+      const result = await operation(alternateSvc);
+      // Persist the correct source so all future calls hit the right account
+      await models.orders.findByIdAndUpdate(orderId, { contificoSource: alternateSvc.source });
+      return result;
+    }
+    throw error;
+  }
+}
 
 export async function createOrder(req: AuthRequest, res: Response, next: NextFunction) {
   try {
@@ -70,6 +102,11 @@ export async function createOrder(req: AuthRequest, res: Response, next: NextFun
         return;
       }
     }
+
+    // Persist the Contifico source from the cart products so invoice generation
+    // always uses the right account (Nicole vs Sucree).
+    const firstProductSource = orderData.products?.[0]?.source;
+    orderData.contificoSource = firstProductSource === 'sucree' ? 'sucree' : 'nicole';
 
     // Default defaults
     if (!orderData.orderDate) orderData.orderDate = new Date();
@@ -434,7 +471,8 @@ export async function processPendingInvoices(req: AuthRequest, res: Response, ne
         // Actually earlier we modified createPerson, but createInvoice also sends client data.
 
         // 2. Create Invoice
-        const invoiceResponse = await contificoService.createInvoice(order);
+        const orderSvc = getContificoService((order as any).contificoSource);
+        const invoiceResponse = await orderSvc.createInvoice(order);
 
         // 3. Update Order
         if (invoiceResponse.error) {
@@ -448,10 +486,10 @@ export async function processPendingInvoices(req: AuthRequest, res: Response, ne
         order.invoiceInfo = invoiceResponse;
         await order.save();
 
-        // 3.1 Trigger SRI Authorization (Manual Trigger Feature)
+        // 3.1 Trigger SRI Authorization y registrar timestamp
         try {
-          // We call this immediately so the user doesn't have to wait for the Contífico hourly script
-          await contificoService.sendToSri(invoiceResponse.id);
+          await orderSvc.sendToSri(invoiceResponse.id);
+          order.invoiceSentToSriAt = new Date();
         } catch (sriError) {
           console.warn(`⚠️ Failed to trigger SRI for order ${order._id} (non-blocking)`);
         }
@@ -468,7 +506,7 @@ export async function processPendingInvoices(req: AuthRequest, res: Response, ne
               cuenta_bancaria_id: resolveBankId(order.paymentDetails.cuenta_bancaria_id)
             };
 
-            await contificoService.registerCollection(invoiceResponse.id, collectionPayload);
+            await orderSvc.registerCollection(invoiceResponse.id, collectionPayload);
           } catch (collectionError: any) {
             console.error(`⚠️ Failed to register automatic collection for order ${order._id}:`, collectionError.message);
             // We don't fail the invoice process, just log it. 
@@ -790,7 +828,11 @@ export async function registerCollection(req: AuthRequest, res: Response, next: 
       cuenta_bancaria_id: collectionData.cuenta_bancaria_id
     };
 
-    const result = await contificoService.registerCollection(documentId, payloadToSend);
+    const result = await withCorrectService(
+      id,
+      (order as any).contificoSource,
+      svc => svc.registerCollection(documentId, payloadToSend)
+    );
 
     res.status(HttpStatusCode.Created).send({
       message: "Collection registered successfully in Contífico.",
@@ -833,8 +875,32 @@ export async function generateInvoice(req: AuthRequest, res: Response, next: Nex
     }
 
 
-    // Create Invoice
-    const invoiceResponse = await contificoService.createInvoice(order);
+    // Create Invoice — use the Contifico account that matches the order's products.
+    // If Contifico rejects with "no pertenece a la empresa", the stored source is wrong
+    // (e.g. legacy order without contificoSource, or products from the other brand).
+    // Auto-retry with the alternate service and persist the correct source.
+    let svc = getContificoService((order as any).contificoSource);
+    let invoiceResponse = await svc.createInvoice(order);
+
+    const isWrongCompanyError = (resp: any) => {
+      const msg = typeof resp?.error === 'object'
+        ? (resp.error?.mensaje || JSON.stringify(resp.error))
+        : String(resp?.error || '');
+      return msg.includes('no pertenece a la empresa');
+    };
+
+    if (invoiceResponse.error && isWrongCompanyError(invoiceResponse)) {
+      // The current service doesn't own these products — flip to the other account.
+      const alternateSvc = svc.source === 'sucree' ? nicoleContificoService : sucreeContificoService;
+      const alternateSource = alternateSvc.source;
+      console.log(`ℹ️ Order ${id}: ${svc.source} rejected product IDs, retrying with ${alternateSource}...`);
+      svc = alternateSvc;
+      invoiceResponse = await svc.createInvoice(order);
+      if (!invoiceResponse.error) {
+        // Persist correct source so future operations (SRI, PDF, collection) use the right account
+        await models.orders.findByIdAndUpdate(id, { contificoSource: alternateSource });
+      }
+    }
 
     if (invoiceResponse.error) {
       // Extract human-readable message from Contifico's error response
@@ -862,8 +928,13 @@ export async function generateInvoice(req: AuthRequest, res: Response, next: Nex
     order.invoiceInfo = invoiceResponse;
     await order.save();
 
-    // Trigger SRI (Non-blocking)
-    contificoService.sendToSri(invoiceResponse.id).catch(err => console.error("SRI Error:", err));
+    // Trigger SRI (Non-blocking) y registrar timestamp para detectar si supera 1 hora sin autorizar
+    const sriSentAt = new Date();
+    svc.sendToSri(invoiceResponse.id)
+      .then(async () => {
+        await models.orders.findByIdAndUpdate(id, { invoiceSentToSriAt: sriSentAt });
+      })
+      .catch(err => console.error("SRI Error:", err));
 
     // Auto-Register Collection if exists
     // SKIP if it's Credit (CR)
@@ -874,7 +945,7 @@ export async function generateInvoice(req: AuthRequest, res: Response, next: Nex
           monto: invoiceResponse.total,
           cuenta_bancaria_id: resolveBankId(order.paymentDetails.cuenta_bancaria_id)
         };
-        await contificoService.registerCollection(invoiceResponse.id, collectionPayload);
+        await svc.registerCollection(invoiceResponse.id, collectionPayload);
       } catch (err) {
         console.error("Auto-collection error:", err);
       }
@@ -920,7 +991,11 @@ export async function getInvoicePdf(req: AuthRequest, res: Response, next: NextF
       return;
     }
 
-    const doc = await contificoService.getDocument(order.invoiceInfo.id);
+    const doc = await withCorrectService(
+      id,
+      (order as any).contificoSource,
+      svc => svc.getDocument(order.invoiceInfo.id)
+    );
 
     res.status(HttpStatusCode.Ok).send({
       message: "Invoice retrieved",
@@ -952,7 +1027,11 @@ export async function getInvoiceAuthStatus(req: AuthRequest, res: Response, next
       return;
     }
 
-    const estado = await contificoService.getDocumentEstado(order.invoiceInfo.id);
+    const estado = await withCorrectService(
+      id,
+      (order as any).contificoSource,
+      svc => svc.getDocumentEstado(order.invoiceInfo.id)
+    );
     res.status(HttpStatusCode.Ok).send(estado);
     return;
   } catch (error: any) {
@@ -976,7 +1055,14 @@ export async function triggerInvoiceAuth(req: AuthRequest, res: Response, next: 
       return;
     }
 
-    const result = await contificoService.sendToSri(order.invoiceInfo.id);
+    const result = await withCorrectService(
+      id,
+      (order as any).contificoSource,
+      svc => svc.sendToSri(order.invoiceInfo.id)
+    );
+    // Registrar el momento en que se envió al SRI para detectar si supera 1 hora sin aprobar
+    order.invoiceSentToSriAt = new Date();
+    await order.save();
     res.status(HttpStatusCode.Ok).send({ message: "Autorización enviada al SRI.", result });
     return;
   } catch (error: any) {

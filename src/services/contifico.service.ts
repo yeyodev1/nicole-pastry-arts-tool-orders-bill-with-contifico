@@ -5,25 +5,30 @@ export class ContificoService {
   private apiKey: string;
   private token: string;
   private baseUrl: string = "https://api.contifico.com/sistema/api/v1";
+  // POS (Punto de Venta) ID para la cuenta — cada empresa tiene el suyo
+  private posId: string;
   // Identifica qué cuenta de Contífico maneja esta instancia
   readonly source: 'nicole' | 'sucree';
 
   constructor(source: 'nicole' | 'sucree' = 'nicole') {
     this.source = source;
 
-    // Seleccionar credenciales según el negocio
+    // Seleccionar credenciales y POS según el negocio
     if (source === 'sucree') {
       this.apiKey = process.env.CONTIFICO_SUCREE_API_KEY || "";
       this.token = process.env.CONTIFICO_SUCREE_TOKEN || "";
+      this.posId = process.env.CONTIFICO_SUCREE_POS_ID || "";
     } else {
       // Default: Nicole (negocio principal)
       this.apiKey = process.env.CONTIFICO_API_KEY || "";
       this.token = process.env.CONTIFICO_TOKEN || "";
+      this.posId = process.env.CONTIFICO_POS_ID || "00f60268-ca0c-48f9-8768-4f2625fa975a";
     }
 
     if (!this.apiKey || !this.token) {
       console.warn(`⚠️ Contífico credentials missing for source '${source}' in .env`);
     }
+    // posId puede estar vacío — se auto-detecta desde /caja/ en el primer uso si no está configurado.
   }
 
   // --- CACHE POR INSTANCIA (evita que Nicole y Sucree compartan caché) ---
@@ -34,6 +39,10 @@ export class ContificoService {
   private cachedCategories: any[] | null = null;
   private cachedCategoriesTime: number = 0;
   private static readonly CATEGORIES_TTL = 3600 * 1000; // 1 hora
+
+  // POS ID auto-detectado desde la API de Contífico (una vez por instancia)
+  private resolvedPosId: string = "";
+  private posIdResolved: boolean = false;
 
   /**
    * Retorna productos cacheados o frescos si el TTL expiró.
@@ -167,25 +176,41 @@ export class ContificoService {
       const randomSeq = Math.floor(Math.random() * 900000) + 100000;
       const docNumber = `001-001-000${randomSeq}`;
 
-      // FIX: Use "Caja Dulcería" POS ID instead of generic API token
-      // This ensures the invoice belongs to the physical box where we want to register collections.
-      // POS: Caja Dulcería (00f60268-ca0c-48f9-8768-4f2625fa975a)
-      const POS_DULCERIA_ID = "00f60268-ca0c-48f9-8768-4f2625fa975a";
+      // POS ID de la cuenta Contífico correspondiente.
+      // Se obtiene de env var o se auto-detecta desde /caja/ (una vez, cacheado por instancia).
+      const POS_DULCERIA_ID = await this.resolvePosId();
 
-      // Standardize ID: Trim spaces
-      const rawId = (orderData.invoiceData.ruc || "").trim();
-      const isCedula = rawId.length === 10;
+      // Identificación del cliente para la factura.
+      // Se usa personType para determinar el tipo de persona y calcular correctamente RUC y cédula.
+      const rawId = (orderData.invoiceData?.ruc || "").trim();
+      const personType = orderData.invoiceData?.personType;
 
-      // In Ecuador, a natural person's RUC is their 10-digit cedula + "001".
-      // Contifico requires a 13-digit ruc field on invoices even for natural persons.
-      const computedRuc = isCedula ? rawId + "001" : rawId;
+      let computedRuc: string;
+      let computedCedula: string;
+
+      if (personType === 'juridica') {
+        // Persona Jurídica: RUC de 13 dígitos, sin cédula
+        computedRuc = rawId;
+        computedCedula = "";
+      } else {
+        // Persona Natural (default si no hay personType o es 'natural')
+        if (rawId.length === 10) {
+          // Cédula: el RUC del SRI es cédula + "001"
+          computedRuc = rawId + "001";
+          computedCedula = rawId;
+        } else {
+          // RUC de persona natural (13 dígitos, termina en 001)
+          computedRuc = rawId;
+          computedCedula = rawId.slice(0, 10);
+        }
+      }
 
       const clientePayload = {
-        razon_social: orderData.invoiceData.businessName,
+        razon_social: orderData.invoiceData?.businessName,
         ruc: computedRuc,
-        cedula: isCedula ? rawId : "",
-        email: orderData.invoiceData.email,
-        direccion: orderData.invoiceData.address,
+        cedula: computedCedula,
+        email: orderData.invoiceData?.email,
+        direccion: orderData.invoiceData?.address,
         tipo: "C",
         telefonos: orderData.customerPhone
       };
@@ -382,10 +407,10 @@ export class ContificoService {
         const cajas = await this.getCajas();
 
         if (cajas && cajas.length > 0) {
-          // PREFERENCE: "Caja Dulcería" (POS ID: 00f60268-ca0c-48f9-8768-4f2625fa975a)
-          const PREFERRED_POS_ID = "00f60268-ca0c-48f9-8768-4f2625fa975a";
+          // Usar el POS de esta cuenta (auto-detectado o configurado por env var)
+          const PREFERRED_POS_ID = await this.resolvePosId();
 
-          // Strategy: Find ALL sessions for the preferred POS and pick the LATEST one.
+          // Strategy: Find ALL sessions for our POS and pick the LATEST one.
           // We ignore 'fecha_cierre' because sometimes active sessions have it populated.
           const posSessions = cajas.filter((c: any) => c.pos === PREFERRED_POS_ID);
 
@@ -499,6 +524,50 @@ export class ContificoService {
       console.error("❌ Error fetching document from Contífico:", error.response?.data || error.message);
       throw new Error(error.response?.data?.mensaje || "Failed to fetch document");
     }
+  }
+
+  /**
+   * Resuelve el POS ID para esta cuenta Contífico.
+   * Prioridad: env var → auto-detección por frecuencia en /caja/ → primer caja disponible.
+   * El resultado queda cacheado por instancia (una sola llamada a la API por ciclo de vida).
+   */
+  async resolvePosId(): Promise<string> {
+    if (this.posIdResolved) return this.resolvedPosId;
+
+    // Si viene configurado por env var, usarlo directamente
+    if (this.posId) {
+      this.resolvedPosId = this.posId;
+      this.posIdResolved = true;
+      return this.resolvedPosId;
+    }
+
+    // Auto-detectar desde la API
+    try {
+      const cajas = await this.getCajas();
+      if (cajas && cajas.length > 0) {
+        // Contar qué POS aparece más veces en las sesiones de caja → el más activo
+        const freq: Record<string, number> = {};
+        for (const c of cajas) {
+          if (c.pos) freq[c.pos] = (freq[c.pos] || 0) + 1;
+        }
+        const sorted = Object.entries(freq).sort((a, b) => b[1] - a[1]);
+        if (sorted.length > 0) {
+          this.resolvedPosId = sorted[0][0];
+          console.log(`✅ [${this.source}] POS auto-detectado: ${this.resolvedPosId}`);
+        } else {
+          // Sin campo pos, usar el id de la primera caja directamente
+          this.resolvedPosId = cajas[0].id || "";
+          console.warn(`⚠️ [${this.source}] Cajas sin campo 'pos', usando primera caja: ${this.resolvedPosId}`);
+        }
+      } else {
+        console.warn(`⚠️ [${this.source}] No se encontraron cajas en Contífico.`);
+      }
+    } catch (err) {
+      console.error(`❌ [${this.source}] Error al auto-detectar POS ID:`, err);
+    }
+
+    this.posIdResolved = true;
+    return this.resolvedPosId;
   }
 
   /**
