@@ -18,7 +18,13 @@ export async function getRawMaterials(req: Request, res: Response, next: NextFun
       ];
     }
 
-    if (provider) query.provider = provider;
+    if (provider) {
+      // Filtra materiales que tienen este proveedor en el array providers[] O en el campo legacy provider
+      query.$or = [
+        { provider: new Types.ObjectId(String(provider)) },
+        { 'providers.provider': new Types.ObjectId(String(provider)) }
+      ];
+    }
     if (category) query.category = String(category);
 
     // Initial fetch of materials based on base filters
