@@ -5,57 +5,66 @@ export class ContificoService {
   private apiKey: string;
   private token: string;
   private baseUrl: string = "https://api.contifico.com/sistema/api/v1";
+  // Identifica qué cuenta de Contífico maneja esta instancia
+  readonly source: 'nicole' | 'sucree';
 
-  constructor() {
-    this.apiKey = process.env.CONTIFICO_API_KEY || "";
-    this.token = process.env.CONTIFICO_TOKEN || "";
+  constructor(source: 'nicole' | 'sucree' = 'nicole') {
+    this.source = source;
+
+    // Seleccionar credenciales según el negocio
+    if (source === 'sucree') {
+      this.apiKey = process.env.CONTIFICO_SUCREE_API_KEY || "";
+      this.token = process.env.CONTIFICO_SUCREE_TOKEN || "";
+    } else {
+      // Default: Nicole (negocio principal)
+      this.apiKey = process.env.CONTIFICO_API_KEY || "";
+      this.token = process.env.CONTIFICO_TOKEN || "";
+    }
 
     if (!this.apiKey || !this.token) {
-      console.warn("⚠️ Contífico credentials missing in .env");
+      console.warn(`⚠️ Contífico credentials missing for source '${source}' in .env`);
     }
   }
 
-  // --- CACHE DEFINITIONS ---
-  private static cachedProducts: any[] | null = null;
-  private static cachedProductsTime: number = 0;
-  private static readonly PRODUCTS_TTL = 3600 * 1000; // 1 hour
+  // --- CACHE POR INSTANCIA (evita que Nicole y Sucree compartan caché) ---
+  private cachedProducts: any[] | null = null;
+  private cachedProductsTime: number = 0;
+  private static readonly PRODUCTS_TTL = 3600 * 1000; // 1 hora
 
-  private static cachedCategories: any[] | null = null;
-  private static cachedCategoriesTime: number = 0;
-  private static readonly CATEGORIES_TTL = 3600 * 1000; // 1 hour
+  private cachedCategories: any[] | null = null;
+  private cachedCategoriesTime: number = 0;
+  private static readonly CATEGORIES_TTL = 3600 * 1000; // 1 hora
 
   /**
-   * Get cached products or fetch fresh if expired.
-   * Useful for heavy dashboards.
+   * Retorna productos cacheados o frescos si el TTL expiró.
    */
   async getCachedProducts(result_size: number = 2000) {
     const now = Date.now();
-    if (ContificoService.cachedProducts && (now - ContificoService.cachedProductsTime < ContificoService.PRODUCTS_TTL)) {
-      return ContificoService.cachedProducts;
+    if (this.cachedProducts && (now - this.cachedProductsTime < ContificoService.PRODUCTS_TTL)) {
+      return this.cachedProducts;
     }
 
-    // Fetch fresh
     const products = await this.getProducts({ result_size });
     if (products) {
-      ContificoService.cachedProducts = products;
-      ContificoService.cachedProductsTime = now;
+      this.cachedProducts = products;
+      this.cachedProductsTime = now;
     }
     return products || [];
   }
 
   /**
-   * Get cached categories or fetch fresh if expired.
+   * Retorna categorías cacheadas o frescas si el TTL expiró.
    */
   async getCachedCategories() {
     const now = Date.now();
-    if (ContificoService.cachedCategories && (now - ContificoService.cachedCategoriesTime < ContificoService.CATEGORIES_TTL)) {
-      return ContificoService.cachedCategories;
+    if (this.cachedCategories && (now - this.cachedCategoriesTime < ContificoService.CATEGORIES_TTL)) {
+      return this.cachedCategories;
     }
 
     const categories = await this.getCategories();
     if (categories) {
-      ContificoService.cachedCategories = categories;
-      ContificoService.cachedCategoriesTime = now;
+      this.cachedCategories = categories;
+      this.cachedCategoriesTime = now;
     }
     return categories || [];
   }

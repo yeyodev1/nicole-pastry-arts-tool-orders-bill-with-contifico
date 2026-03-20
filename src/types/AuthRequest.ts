@@ -5,6 +5,7 @@ export interface JwtPayload {
   email: string;
   name: string;
   role: string;
+  contificoSource?: string;
   iat?: number;
   exp?: number;
 }
