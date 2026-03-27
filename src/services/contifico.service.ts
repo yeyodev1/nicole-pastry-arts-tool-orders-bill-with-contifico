@@ -181,28 +181,24 @@ export class ContificoService {
       const POS_DULCERIA_ID = await this.resolvePosId();
 
       // Identificación del cliente para la factura.
-      // Se usa personType para determinar el tipo de persona y calcular correctamente RUC y cédula.
+      // REGLA SRI: tipoIdentificacionComprador se determina SOLO por el largo del ID:
+      //   13 dígitos → RUC (04): enviar solo `ruc`, `cedula = ""`
+      //   10 dígitos → Cédula (05): enviar `cedula` y `ruc = cedula + "001"`
+      // NO mezclar cedula + ruc — si se envían ambos Contifico genera
+      // tipoIdentificacionComprador="None" y el SRI rechaza: "ARCHIVO NO CUMPLE ESTRUCTURA XML".
       const rawId = (orderData.invoiceData?.ruc || "").trim();
-      const personType = orderData.invoiceData?.personType;
 
       let computedRuc: string;
       let computedCedula: string;
 
-      if (personType === 'juridica') {
-        // Persona Jurídica: RUC de 13 dígitos, sin cédula
+      if (rawId.length === 13) {
+        // RUC (empresa o persona natural con RUC) → solo ruc
         computedRuc = rawId;
         computedCedula = "";
       } else {
-        // Persona Natural (default si no hay personType o es 'natural')
-        if (rawId.length === 10) {
-          // Cédula: el RUC del SRI es cédula + "001"
-          computedRuc = rawId + "001";
-          computedCedula = rawId;
-        } else {
-          // RUC de persona natural (13 dígitos, termina en 001)
-          computedRuc = rawId;
-          computedCedula = rawId.slice(0, 10);
-        }
+        // Cédula (10 dígitos) → cedula + ruc derivado
+        computedRuc = rawId + "001";
+        computedCedula = rawId;
       }
 
       const clientePayload = {
@@ -655,14 +651,13 @@ export class ContificoService {
 
       const POS_ID = await this.resolvePosId();
       const rawId = (orderData.invoiceData?.ruc || "").trim();
-      const personType = orderData.invoiceData?.personType;
 
+      // Mismo criterio que createInvoice: derivar de largo, NO de personType
       let ruc: string, cedula: string;
-      if (personType === 'juridica') {
+      if (rawId.length === 13) {
         ruc = rawId; cedula = "";
       } else {
-        if (rawId.length === 10) { ruc = rawId + "001"; cedula = rawId; }
-        else { ruc = rawId; cedula = rawId.slice(0, 10); }
+        ruc = rawId + "001"; cedula = rawId;
       }
 
       const payload = {
@@ -703,6 +698,36 @@ export class ContificoService {
       console.error("❌ Error repairing document in Contífico:", error.response?.data || error.message);
       throw new Error(error.response?.data?.mensaje || "Failed to repair document in Contífico");
     }
+  }
+
+  /**
+   * Espera a que Contifico firme el documento y luego lo envía al SRI.
+   * Contifico firma en background unos segundos después de crear el documento.
+   * Si llamamos sendToSri antes de que esté firmado, el request se ignora silenciosamente.
+   * @param documentId Document ID
+   * @param maxWaitMs Tiempo máximo de espera en ms (default 30s)
+   */
+  async sendToSriWhenReady(documentId: string, maxWaitMs = 30000): Promise<any> {
+    const pollInterval = 4000; // verificar cada 4 segundos
+    const start = Date.now();
+
+    while (Date.now() - start < maxWaitMs) {
+      try {
+        const estado = await this.getDocumentEstado(documentId);
+        if (estado?.estado && estado.estado !== 'No Firmado') {
+          // Documento firmado (estado: "Firmado") — ahora sí enviar al SRI
+          console.log(`✅ [${this.source}] Doc ${documentId} firmado (${estado.estado}), enviando al SRI...`);
+          return await this.sendToSri(documentId);
+        }
+        console.log(`⏳ [${this.source}] Doc ${documentId} aún no firmado, reintentando en ${pollInterval/1000}s...`);
+      } catch {
+        // Si getDocumentEstado falla, esperamos y reintentamos
+      }
+      await new Promise(resolve => setTimeout(resolve, pollInterval));
+    }
+
+    console.warn(`⚠️ [${this.source}] Doc ${documentId} no se firmó en ${maxWaitMs/1000}s — Contífico lo procesará en su próximo ciclo automático.`);
+    return { warning: 'document_not_signed_in_time' };
   }
 
   /**

@@ -487,12 +487,11 @@ export async function processPendingInvoices(req: AuthRequest, res: Response, ne
         await order.save();
 
         // 3.1 Trigger SRI Authorization y registrar timestamp
-        try {
-          await orderSvc.sendToSri(invoiceResponse.id);
-          order.invoiceSentToSriAt = new Date();
-        } catch (sriError) {
-          console.warn(`⚠️ Failed to trigger SRI for order ${order._id} (non-blocking)`);
-        }
+        // sendToSriWhenReady espera a que Contifico termine de firmar antes de enviar al SRI
+        order.invoiceSentToSriAt = new Date();
+        await order.save();
+        orderSvc.sendToSriWhenReady(invoiceResponse.id)
+          .catch(sriError => console.warn(`⚠️ Failed to trigger SRI for order ${order._id} (non-blocking)`, sriError));
 
         // 4. Register Collection AUTOMATICALLY if payment details exist
         // SKIP if it's Credit (CR)
@@ -928,9 +927,9 @@ export async function generateInvoice(req: AuthRequest, res: Response, next: Nex
     order.invoiceInfo = invoiceResponse;
     await order.save();
 
-    // Trigger SRI (Non-blocking) y registrar timestamp para detectar si supera 1 hora sin autorizar
+    // Trigger SRI (Non-blocking) — sendToSriWhenReady espera firma de Contifico antes de enviar al SRI
     const sriSentAt = new Date();
-    svc.sendToSri(invoiceResponse.id)
+    svc.sendToSriWhenReady(invoiceResponse.id)
       .then(async () => {
         await models.orders.findByIdAndUpdate(id, { invoiceSentToSriAt: sriSentAt });
       })
@@ -1057,7 +1056,7 @@ export async function regenerateInvoice(req: AuthRequest, res: Response, next: N
     await order.save();
 
     const sriSentAt = new Date();
-    svc.sendToSri(invoiceResponse.id)
+    svc.sendToSriWhenReady(invoiceResponse.id)
       .then(async () => {
         await models.orders.findByIdAndUpdate(id, { invoiceSentToSriAt: sriSentAt });
       })
