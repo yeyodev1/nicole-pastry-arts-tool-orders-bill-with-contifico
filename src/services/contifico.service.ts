@@ -230,8 +230,11 @@ export class ContificoService {
           descuento: undefined
         })),
         subtotal_0: Number(subtotal_0.toFixed(2)),
-        subtotal_12: 0,
-        subtotal_15: Number(subtotal_15.toFixed(2)),
+        // Contifico usa `subtotal_12` como campo de base gravable para IVA (sin importar si la tasa es 12% o 15%).
+        // La tasa real se determina por `porcentaje_iva` en cada detalle.
+        // `subtotal_15` es ignorado por la API → enviarlo como 0 evita confusión.
+        subtotal_12: Number(subtotal_15.toFixed(2)),
+        subtotal_15: 0,
         iva: Number(total_iva.toFixed(2)),
         ice: 0,
         total: Number(total_final.toFixed(2)),
@@ -598,6 +601,107 @@ export class ContificoService {
     } catch (error: any) {
       console.warn("⚠️ Error fetching Bank Accounts (trying /banco/cuenta/):", error.response?.data || error.message);
       return [];
+    }
+  }
+
+  /**
+   * Repara una factura rota vía PUT (subtotal_12 = 0 con iva > 0).
+   * La API de Contífico no soporta DELETE en documentos — en cambio usamos PUT
+   * para corregir los campos y re-firmar. Contífico re-genera la firma automáticamente.
+   * @param documentId ID del documento en Contífico
+   * @param orderData Datos del pedido (mismos que se usan en createInvoice)
+   */
+  async repairDocument(documentId: string, orderData: any) {
+    try {
+      // Recalcular totales correctos (igual que createInvoice)
+      let subtotal_0 = 0;
+      let subtotal_12_val = 0;
+
+      const detalles = orderData.products.map((p: any) => {
+        const cantidad = Number(p.quantity);
+        const precio = Number(p.price);
+        const isDelivery = p.name.toLowerCase().includes('delivery');
+        const porcentaje_iva = 15; // Siempre 15% (Ecuador 2024+)
+
+        let calcPrice = precio;
+        if (isDelivery) calcPrice = precio / 1.15;
+
+        let discountPercentage = p.isCourtesy ? 100 : 0;
+        if (orderData.isGlobalCourtesy) {
+          discountPercentage = 100;
+        } else if (orderData.globalDiscountPercentage > 0 && discountPercentage < 100) {
+          discountPercentage = orderData.globalDiscountPercentage;
+        }
+
+        const totalLine = cantidad * calcPrice * ((100 - discountPercentage) / 100);
+        const base_gravable = Number(totalLine.toFixed(2));
+        subtotal_12_val += base_gravable;
+
+        return {
+          producto_id: p.contifico_id || "9pgenB6GQcVWoeNQ",
+          cantidad,
+          precio: Number(calcPrice.toFixed(4)),
+          descripcion: p.name,
+          porcentaje_iva,
+          base_cero: 0,
+          base_gravable,
+          base_no_gravable: 0,
+          porcentaje_descuento: discountPercentage,
+        };
+      });
+
+      const iva = Number((subtotal_12_val * 0.15).toFixed(2));
+      const total = Number((subtotal_0 + subtotal_12_val + iva).toFixed(2));
+
+      const POS_ID = await this.resolvePosId();
+      const rawId = (orderData.invoiceData?.ruc || "").trim();
+      const personType = orderData.invoiceData?.personType;
+
+      let ruc: string, cedula: string;
+      if (personType === 'juridica') {
+        ruc = rawId; cedula = "";
+      } else {
+        if (rawId.length === 10) { ruc = rawId + "001"; cedula = rawId; }
+        else { ruc = rawId; cedula = rawId.slice(0, 10); }
+      }
+
+      const payload = {
+        id: documentId,
+        pos: POS_ID,
+        fecha_emision: new Date().toLocaleDateString("en-GB"),
+        tipo_documento: "FAC",
+        estado: "P",
+        electronico: true,
+        autorizacion: "",
+        cliente: {
+          razon_social: orderData.invoiceData?.businessName,
+          ruc,
+          cedula,
+          email: orderData.invoiceData?.email,
+          direccion: orderData.invoiceData?.address,
+          tipo: "C",
+          telefonos: orderData.customerPhone,
+        },
+        detalles,
+        subtotal_0: Number(subtotal_0.toFixed(2)),
+        subtotal_12: Number(subtotal_12_val.toFixed(2)),
+        subtotal_15: 0,
+        iva,
+        ice: 0,
+        total,
+        servicio: 0,
+        propina: 0,
+        metodo_pago: "TRA",
+      };
+
+      const response = await axios.put(`${this.baseUrl}/documento/`, payload, {
+        headers: { Authorization: this.apiKey, "Content-Type": "application/json" },
+      });
+
+      return response.data;
+    } catch (error: any) {
+      console.error("❌ Error repairing document in Contífico:", error.response?.data || error.message);
+      throw new Error(error.response?.data?.mensaje || "Failed to repair document in Contífico");
     }
   }
 

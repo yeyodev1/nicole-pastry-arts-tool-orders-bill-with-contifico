@@ -49,6 +49,9 @@ router.get("/:id/invoice/auth-status", OrderController.getInvoiceAuthStatus);
 // POST /api/orders/:id/invoice/authorize
 router.post("/:id/invoice/authorize", OrderController.triggerInvoiceAuth);
 
+// POST /api/orders/:id/invoice/regenerate (elimina doc Contifico roto y lo recrea)
+router.post("/:id/invoice/regenerate", authMiddleware as any, OrderController.regenerateInvoice);
+
 // POST /api/orders/:id/settle-island
 router.post("/:id/settle-island", OrderController.settleOrderInIsland);
 

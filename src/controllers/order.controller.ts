@@ -978,6 +978,125 @@ export async function generateInvoice(req: AuthRequest, res: Response, next: Nex
 }
 
 /**
+ * Regenerate invoice: repara una factura rota (subtotal_12=0) vía PUT en Contífico.
+ * La API de Contífico no soporta DELETE de documentos — usamos PUT para corregir
+ * los valores y que Contífico re-firme y re-envíe al SRI automáticamente.
+ * POST /api/orders/:id/invoice/regenerate
+ */
+export async function regenerateInvoice(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    const { id } = req.params;
+    const order = await models.orders.findById(id);
+
+    if (!order) {
+      res.status(HttpStatusCode.NotFound).send({ message: "Order not found." });
+      return;
+    }
+
+    const existingDocId = (order as any).invoiceInfo?.id;
+    let svc = getContificoService((order as any).contificoSource);
+    let invoiceResponse: any;
+
+    if (existingDocId) {
+      // Step 1: Intentar reparar via PUT (corrige subtotal_12 y re-firma)
+      console.log(`[regenerate] Repairing Contifico doc ${existingDocId} via PUT...`);
+      try {
+        invoiceResponse = await svc.repairDocument(existingDocId, order);
+        console.log(`✅ [regenerate] PUT repair succeeded for doc ${existingDocId}`);
+      } catch (repairErr: any) {
+        // Si PUT falla (ej: doc ya autorizado o no se puede modificar),
+        // crear un documento nuevo en Contífico
+        console.warn(`⚠️ [regenerate] PUT repair failed: ${repairErr.message}. Creating new document...`);
+        invoiceResponse = null;
+      }
+    }
+
+    if (!invoiceResponse) {
+      // Step 2: Reset state y crear nueva factura (fallback)
+      (order as any).invoiceStatus = "PENDING";
+      (order as any).invoiceInfo = null;
+      (order as any).invoiceError = null;
+      (order as any).invoiceSentToSriAt = null;
+      (order as any).invoiceNeeded = true;
+      await order.save();
+
+      invoiceResponse = await svc.createInvoice(order);
+    }
+
+    const isWrongCompanyError = (resp: any) => {
+      const msg = typeof resp?.error === 'object'
+        ? (resp.error?.mensaje || JSON.stringify(resp.error))
+        : String(resp?.error || '');
+      return msg.includes('no pertenece a la empresa');
+    };
+
+    if (invoiceResponse.error && isWrongCompanyError(invoiceResponse)) {
+      const alternateSvc = svc.source === 'sucree' ? nicoleContificoService : sucreeContificoService;
+      svc = alternateSvc;
+      invoiceResponse = await svc.createInvoice(order);
+      if (!invoiceResponse.error) {
+        await models.orders.findByIdAndUpdate(id, { contificoSource: alternateSvc.source });
+      }
+    }
+
+    if (invoiceResponse.error) {
+      let contificoMensaje = '';
+      const rawError = invoiceResponse.error;
+      if (typeof rawError === 'object' && rawError !== null) {
+        contificoMensaje = rawError.mensaje || JSON.stringify(rawError);
+      } else {
+        contificoMensaje = String(rawError);
+      }
+      const err = new Error(contificoMensaje) as any;
+      err.isContificoError = true;
+      throw err;
+    }
+
+    order.invoiceStatus = "PROCESSED";
+    order.invoiceInfo = invoiceResponse;
+    await order.save();
+
+    const sriSentAt = new Date();
+    svc.sendToSri(invoiceResponse.id)
+      .then(async () => {
+        await models.orders.findByIdAndUpdate(id, { invoiceSentToSriAt: sriSentAt });
+      })
+      .catch(err => console.error("SRI Error (regenerate):", err));
+
+    if ((order as any).paymentDetails?.monto && (order as any).paymentDetails?.forma_cobro !== 'CR') {
+      try {
+        const collectionPayload = {
+          ...(order as any).paymentDetails,
+          monto: invoiceResponse.total,
+          cuenta_bancaria_id: resolveBankId((order as any).paymentDetails.cuenta_bancaria_id)
+        };
+        await svc.registerCollection(invoiceResponse.id, collectionPayload);
+      } catch (err) {
+        console.error("Auto-collection error (regenerate):", err);
+      }
+    }
+
+    res.status(HttpStatusCode.Ok).send({ message: "Invoice regenerated successfully.", order });
+    return;
+
+  } catch (error: any) {
+    console.error("Error regenerating invoice:", error);
+    try {
+      await models.orders.findByIdAndUpdate(req.params.id, { invoiceStatus: 'ERROR', invoiceError: error.message });
+    } catch (e) { }
+    const contificoMessage = error.isContificoError ? error.message : null;
+    res.status(HttpStatusCode.InternalServerError).send({
+      message: contificoMessage
+        ? `Error de Contífico: ${contificoMessage}`
+        : "Error al regenerar la factura.",
+      contificoMessage: contificoMessage || null,
+      error: error.message || String(error)
+    });
+    return;
+  }
+}
+
+/**
  * Get Invoice PDF Link
  * GET /api/orders/:id/invoice-pdf
  */
