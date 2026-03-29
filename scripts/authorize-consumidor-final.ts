@@ -264,12 +264,10 @@ async function main() {
 
   const signedDocIds = await waitForAllSigned(created, 15);
 
-  if (signedDocIds.size === 0) {
-    console.log('\n⚠️  Ningún doc firmado en 15 min. Contifico puede estar lento.');
-    console.log('   Vuelve a ejecutar este script más tarde para continuar.\n');
-    await mongoose.disconnect();
-    process.exit(0);
-  }
+  // Contifico a veces no actualiza `firmado: true` en el GET aunque el documento
+  // esté listo para SRI internamente. Incluir todos los creados en Phase 3.
+  const allDocIds = new Set(created.map(d => d.docId));
+  const toSendIds = new Set([...signedDocIds, ...allDocIds]);
 
   // ════════════════════════════════════════════════════
   // FASE 3 — Enviar al SRI + polling autorización
@@ -278,7 +276,7 @@ async function main() {
   console.log('FASE 3 — Enviar al SRI y verificar autorización');
   console.log('═'.repeat(56));
 
-  await sendAndVerify(created, signedDocIds);
+  await sendAndVerify(created, toSendIds);
 
   // ── Resumen final ──────────────────────────────────
   const finalOrders = await models.orders

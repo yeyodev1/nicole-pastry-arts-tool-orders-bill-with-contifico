@@ -14,7 +14,9 @@
 		"regen:invoices": "ts-node-dev scripts/regenerate-invoices.ts",
 		"verify:invoices": "ts-node-dev scripts/verify-invoices.ts",
 		"watch:invoices": "ts-node-dev scripts/watch-invoices.ts",
-		"auth:consumidor": "ts-node-dev scripts/authorize-consumidor-final.ts"
+		"auth:consumidor": "ts-node-dev scripts/authorize-consumidor-final.ts",
+		"create:cf": "ts-node-dev scripts/create-cf-invoices.ts",
+		"send:sri": "ts-node-dev scripts/send-to-sri.ts"
 	},
 	"keywords": [],
 	"author": "yeyodev",

@@ -79,6 +79,52 @@ export class ContificoService {
   }
 
   /**
+   * Busca una persona en Contifico por cédula/RUC.
+   * Devuelve el primer resultado o null si no existe.
+   */
+  async findPersona(identificacion: string): Promise<any | null> {
+    try {
+      const response = await axios.get(`${this.baseUrl}/persona/`, {
+        headers: { Authorization: this.apiKey },
+        params: { identificacion },
+      });
+      const results = response.data;
+      if (Array.isArray(results) && results.length > 0) return results[0];
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Si la persona existe en Contifico con tipo "C" (inválido para SRI),
+   * intenta actualizar el tipo al valor correcto via PUT.
+   * Retorna true si la persona quedó con el tipo correcto, false si falló.
+   */
+  async ensurePersonaTipo(rawId: string, correctTipo: string): Promise<boolean> {
+    try {
+      const persona = await this.findPersona(rawId);
+      if (!persona) return true; // No existe aún — se creará nueva con tipo correcto
+      if (persona.tipo !== 'C') return true; // Ya tiene tipo válido
+
+      // Intentar corregir el tipo via PUT
+      console.log(`🔧 [${this.source}] Persona ${rawId} tiene tipo "C" — intentando corregir a "${correctTipo}"...`);
+      await axios.put(`${this.baseUrl}/persona/`, {
+        ...persona,
+        tipo: correctTipo,
+      }, {
+        headers: { Authorization: this.apiKey, 'Content-Type': 'application/json' },
+        params: { pos: this.token },
+      });
+      console.log(`✅ [${this.source}] Persona ${rawId} actualizada a tipo "${correctTipo}"`);
+      return true;
+    } catch (err: any) {
+      console.warn(`⚠️ [${this.source}] No se pudo actualizar tipo de persona ${rawId}: ${err?.response?.data?.mensaje || err.message}`);
+      return false; // El caller fallback a CF
+    }
+  }
+
+  /**
    * Create an invoice in Contífico
    */
   async createInvoice(orderData: any) {
@@ -206,13 +252,35 @@ export class ContificoService {
         computedCedula = rawId;
       }
 
+      // BLINDAJE SRI: si la persona ya existe en Contifico con tipo "C",
+      // intentar corregirla antes de crear la factura.
+      // Si no se puede corregir, usar datos de Consumidor Final como fallback.
+      const personaOk = await this.ensurePersonaTipo(rawId, computedTipo);
+      let invoiceRuc = computedRuc;
+      let invoiceCedula = computedCedula;
+      let invoiceTipo = computedTipo;
+      let invoiceRazonSocial = orderData.invoiceData?.businessName;
+      let invoiceEmail = orderData.invoiceData?.email;
+      let invoiceDireccion = orderData.invoiceData?.address;
+
+      if (!personaOk) {
+        // Fallback: Consumidor Final (persona_id: NO8bYRVq3HX9xd7j, tipo N, siempre autoriza)
+        console.warn(`⚠️ [${this.source}] Usando Consumidor Final como fallback para ${rawId}`);
+        invoiceRuc = "9999999999999";
+        invoiceCedula = "9999999999";
+        invoiceTipo = "N";
+        invoiceRazonSocial = "consumidor final";
+        invoiceEmail = "noname@noname.com";
+        invoiceDireccion = "sin dirección";
+      }
+
       const clientePayload = {
-        razon_social: orderData.invoiceData?.businessName,
-        ruc: computedRuc,
-        cedula: computedCedula,
-        email: orderData.invoiceData?.email,
-        direccion: orderData.invoiceData?.address,
-        tipo: computedTipo,
+        razon_social: invoiceRazonSocial,
+        ruc: invoiceRuc,
+        cedula: invoiceCedula,
+        email: invoiceEmail,
+        direccion: invoiceDireccion,
+        tipo: invoiceTipo,
         telefonos: orderData.customerPhone
       };
 
@@ -718,8 +786,8 @@ export class ContificoService {
    * @param documentId Document ID
    * @param maxWaitMs Tiempo máximo de espera en ms (default 30s)
    */
-  async sendToSriWhenReady(documentId: string, maxWaitMs = 30000): Promise<any> {
-    const pollInterval = 4000; // verificar cada 4 segundos
+  async sendToSriWhenReady(documentId: string, maxWaitMs = 600000): Promise<any> {
+    const pollInterval = 15000; // verificar cada 15 segundos (Contifico firma en 2-10 min)
     const start = Date.now();
 
     while (Date.now() - start < maxWaitMs) {
@@ -739,8 +807,8 @@ export class ContificoService {
       await new Promise(resolve => setTimeout(resolve, pollInterval));
     }
 
-    console.warn(`⚠️ [${this.source}] Doc ${documentId} no se firmó en ${maxWaitMs/1000}s — Contífico lo procesará en su próximo ciclo automático.`);
-    return { warning: 'document_not_signed_in_time' };
+    console.warn(`⚠️ [${this.source}] Doc ${documentId} no se firmó en ${maxWaitMs/1000}s — enviando al SRI de todas formas (Contifico puede haberlo firmado internamente sin actualizar el flag).`);
+    return await this.sendToSri(documentId);
   }
 
   /**

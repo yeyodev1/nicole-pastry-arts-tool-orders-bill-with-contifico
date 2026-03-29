@@ -1,11 +1,12 @@
 /**
- * verify-invoices.ts
+ * send-to-sri.ts
  *
- * Consulta Contifico y guarda en DB los números de autorización SRI
- * de todas las facturas PROCESSED sin autorización.
+ * Envía al SRI todos los documentos Contifico que están PROCESSED
+ * pero sin autorización. No espera firma — intenta enviar siempre
+ * (Contifico puede estar firmado internamente aunque el flag diga false).
  *
- * Correr después de send-to-sri.ts (SRI responde en ~20s).
- * Repetir hasta que PENDIENTES = 0.
+ * Correr después de esperar ~8 min desde create-cf-invoices.ts
+ * Luego correr verify:invoices para recoger autorizaciones.
  */
 
 import mongoose from 'mongoose';
@@ -37,15 +38,15 @@ async function main() {
     .sort({ createdAt: 1 });
 
   if (orders.length === 0) {
-    console.log('🎉 ¡Todas las facturas están autorizadas!');
+    console.log('✅ No hay docs pendientes de enviar al SRI.');
     await mongoose.disconnect();
     process.exit(0);
   }
 
-  console.log(`🔍 Verificando ${orders.length} facturas...\n`);
+  console.log(`📤 Enviando ${orders.length} documentos al SRI...\n`);
 
-  let authorized = 0;
-  let pending = 0;
+  let sent = 0;
+  let failed = 0;
   const CHUNK_SIZE = 10;
 
   for (let i = 0; i < orders.length; i += CHUNK_SIZE) {
@@ -57,36 +58,24 @@ async function main() {
       const svc = getSvc((order as any).contificoSource);
 
       try {
-        const doc = await svc.getDocument(docId);
-        if (doc?.autorizacion) {
-          await models.orders.findByIdAndUpdate(order._id, {
-            'invoiceInfo.autorizacion': doc.autorizacion,
-            invoiceError: null,
-          });
-          process.stdout.write(`  ✅ ${name} — ${String(doc.autorizacion).slice(0, 15)}...\n`);
-          authorized++;
-        } else {
-          pending++;
-        }
-      } catch (_) {
-        pending++;
+        await svc.sendToSri(docId);
+        await models.orders.findByIdAndUpdate(order._id, { invoiceSentToSriAt: new Date() });
+        process.stdout.write(`  ✅ ${name} — ${docId}\n`);
+        sent++;
+      } catch (err: any) {
+        process.stdout.write(`  ⚠️  ${name} — ${err?.message?.slice(0, 40) ?? 'error'}\n`);
+        failed++;
       }
     }));
 
-    if (i + CHUNK_SIZE < orders.length) await sleep(200);
+    if (i + CHUNK_SIZE < orders.length) await sleep(300);
   }
 
   console.log(`\n${'═'.repeat(50)}`);
-  console.log(`📊 RESULTADO`);
-  console.log(`  ✅ Autorizadas ahora: ${authorized}`);
-  console.log(`  ⏳ Pendientes:        ${pending}`);
+  console.log(`📊 Enviados: ${sent} ✅  Con error: ${failed} ⚠️`);
+  console.log(`\n⏳ Ahora corre inmediatamente:`);
+  console.log(`   pnpm verify:invoices\n`);
   console.log('═'.repeat(50));
-
-  if (pending > 0) {
-    console.log(`\n⏳ Quedan ${pending} pendientes. Vuelve a correr:\n   pnpm verify:invoices\n`);
-  } else {
-    console.log('\n🎉 ¡Todas autorizadas!\n');
-  }
 
   await mongoose.disconnect();
   process.exit(0);
