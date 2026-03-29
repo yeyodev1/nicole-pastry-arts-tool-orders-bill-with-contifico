@@ -186,17 +186,22 @@ export class ContificoService {
       //   10 dígitos → Cédula (05): enviar `cedula` y `ruc = cedula + "001"`
       // NO mezclar cedula + ruc — si se envían ambos Contifico genera
       // tipoIdentificacionComprador="None" y el SRI rechaza: "ARCHIVO NO CUMPLE ESTRUCTURA XML".
-      const rawId = (orderData.invoiceData?.ruc || "").trim();
+      const rawId = (orderData.invoiceData?.ruc || "").replace(/\s+/g, "");
 
       let computedRuc: string;
       let computedCedula: string;
 
+      // tipo según doc oficial Contifico: N=Natural, J=Juridica, I=SinId, P=Placa
+      // "C" NO es un valor válido — causa XML inválido en el SRI.
+      let computedTipo: string;
       if (rawId.length === 13) {
-        // RUC (empresa o persona natural con RUC) → solo ruc
+        // RUC empresa (no termina en 001) → Juridica; persona natural con RUC (termina en 001) → Natural
+        computedTipo = rawId.endsWith("001") ? "N" : "J";
         computedRuc = rawId;
-        computedCedula = "";
+        computedCedula = rawId.endsWith("001") ? rawId.slice(0, 10) : "";
       } else {
-        // Cédula (10 dígitos) → cedula + ruc derivado
+        // Cédula (10 dígitos) → persona Natural
+        computedTipo = "N";
         computedRuc = rawId + "001";
         computedCedula = rawId;
       }
@@ -207,7 +212,7 @@ export class ContificoService {
         cedula: computedCedula,
         email: orderData.invoiceData?.email,
         direccion: orderData.invoiceData?.address,
-        tipo: "C",
+        tipo: computedTipo,
         telefonos: orderData.customerPhone
       };
 
@@ -650,14 +655,16 @@ export class ContificoService {
       const total = Number((subtotal_0 + subtotal_12_val + iva).toFixed(2));
 
       const POS_ID = await this.resolvePosId();
-      const rawId = (orderData.invoiceData?.ruc || "").trim();
+      const rawId = (orderData.invoiceData?.ruc || "").replace(/\s+/g, "");
 
-      // Mismo criterio que createInvoice: derivar de largo, NO de personType
-      let ruc: string, cedula: string;
+      // Mismo criterio que createInvoice: tipo según doc oficial (N/J), nunca "C"
+      let ruc: string, cedula: string, tipo: string;
       if (rawId.length === 13) {
-        ruc = rawId; cedula = "";
+        ruc = rawId;
+        cedula = rawId.endsWith("001") ? rawId.slice(0, 10) : "";
+        tipo = rawId.endsWith("001") ? "N" : "J";
       } else {
-        ruc = rawId + "001"; cedula = rawId;
+        ruc = rawId + "001"; cedula = rawId; tipo = "N";
       }
 
       const payload = {
@@ -665,6 +672,10 @@ export class ContificoService {
         pos: POS_ID,
         fecha_emision: new Date().toLocaleDateString("en-GB"),
         tipo_documento: "FAC",
+        // Preservar el número de secuencia original del documento para que Contifico
+        // no genere uno nuevo. Sin esto, el PUT puede asignar un numero diferente
+        // lo que rompe la trazabilidad con el SRI.
+        documento: orderData.invoiceInfo?.documento,
         estado: "P",
         electronico: true,
         autorizacion: "",
@@ -674,7 +685,7 @@ export class ContificoService {
           cedula,
           email: orderData.invoiceData?.email,
           direccion: orderData.invoiceData?.address,
-          tipo: "C",
+          tipo,
           telefonos: orderData.customerPhone,
         },
         detalles,
@@ -714,12 +725,14 @@ export class ContificoService {
     while (Date.now() - start < maxWaitMs) {
       try {
         const estado = await this.getDocumentEstado(documentId);
-        if (estado?.estado && estado.estado !== 'No Firmado') {
-          // Documento firmado (estado: "Firmado") — ahora sí enviar al SRI
-          console.log(`✅ [${this.source}] Doc ${documentId} firmado (${estado.estado}), enviando al SRI...`);
+        // NOTA: la API devuelve "No se ha firmado" (no "No Firmado") para documentos sin firma.
+        // Solo llamar sendToSri cuando el estado sea exactamente "Firmado".
+        if (estado?.estado === 'Firmado') {
+          // Documento firmado — ahora sí enviar al SRI
+          console.log(`✅ [${this.source}] Doc ${documentId} firmado, enviando al SRI...`);
           return await this.sendToSri(documentId);
         }
-        console.log(`⏳ [${this.source}] Doc ${documentId} aún no firmado, reintentando en ${pollInterval/1000}s...`);
+        console.log(`⏳ [${this.source}] Doc ${documentId} estado="${estado?.estado}" — reintentando en ${pollInterval/1000}s...`);
       } catch {
         // Si getDocumentEstado falla, esperamos y reintentamos
       }

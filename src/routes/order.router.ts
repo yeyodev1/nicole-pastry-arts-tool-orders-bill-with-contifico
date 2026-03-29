@@ -31,6 +31,15 @@ router.post("/reassign-delivery", OrderController.reassignDelivery);
 // POST /api/orders/batch-invoice (Protected by Cron)
 router.post("/batch-invoice", OrderController.processPendingInvoices);
 
+// POST /api/orders/invoice/batch-reauthorize
+router.post("/invoice/batch-reauthorize", authMiddleware as any, OrderController.batchReauthorizeInvoices);
+
+// POST /api/orders/invoice/sync-authorizations — pull autorizacion from Contifico → DB
+router.post("/invoice/sync-authorizations", authMiddleware as any, OrderController.syncInvoiceAuthorizations);
+
+// POST /api/orders/invoice/generate-missing — create invoices for orders that never got one
+router.post("/invoice/generate-missing", authMiddleware as any, OrderController.generateMissingInvoices);
+
 // PUT /api/orders/:id/invoice
 router.put("/:id/invoice", OrderController.updateInvoiceData);
 
