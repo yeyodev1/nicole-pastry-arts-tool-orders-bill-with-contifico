@@ -204,7 +204,7 @@ import { AuthRequest } from "../types/AuthRequest";
  */
 export async function getSalesByResponsible(req: AuthRequest, res: Response, next: NextFunction) {
   try {
-    const { from, to } = req.query;
+    const { from, to, source } = req.query;
 
     // --- Enforce Ecuador Time (UTC-5) ---
     // Calculate defaults based on current Ecuador time
@@ -258,8 +258,12 @@ export async function getSalesByResponsible(req: AuthRequest, res: Response, nex
 
     const orderMatch: any = {
       createdAt: { $gte: startDate, $lte: endDate },
-      invoiceStatus: { $ne: "VOID" } // Ensure we don't count voided orders
+      invoiceStatus: { $ne: "VOID" }
     };
+
+    if (source === 'nicole' || source === 'sucree') {
+      orderMatch.contificoSource = source;
+    }
 
     // If SALES_REP, only show their own data
     if (currentRole === 'SALES_REP' || currentRole === 'SALES') {
