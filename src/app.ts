@@ -16,7 +16,8 @@ export default function createApp() {
     "http://localhost:8101",
     "http://localhost:8080",
     "http://localhost:5173",
-    "https://nicole-sells-bills.netlify.app"
+    "https://nicole-sells-bills.netlify.app",
+    "https://testing-storybrand-frontend.bakano.ec"
   ];
 
   const corsOptions = {

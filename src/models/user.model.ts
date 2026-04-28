@@ -5,7 +5,7 @@ export interface IUser extends Document {
   name: string;
   email: string;
   password?: string; // Optional because we might auto-generate or use other auth methods later
-  role: "admin" | "sales" | "production" | "RetailManager" | "SUPPLY_CHAIN_MANAGER" | "SALES_MANAGER" | "SALES_REP" | "KITCHEN_DISPLAY";
+  role: "admin" | "sales" | "production" | "RetailManager" | "SUPPLY_CHAIN_MANAGER" | "SALES_MANAGER" | "SALES_REP" | "KITCHEN_DISPLAY" | "superadmin";
   contificoSource?: 'nicole' | 'sucree' | 'both';
 }
 
@@ -28,7 +28,7 @@ const UserSchema = new Schema<IUser>(
     },
     role: {
       type: String,
-      enum: ["admin", "sales", "production", "RetailManager", "SUPPLY_CHAIN_MANAGER", "SALES_MANAGER", "SALES_REP", "KITCHEN_DISPLAY"],
+      enum: ["admin", "sales", "production", "RetailManager", "SUPPLY_CHAIN_MANAGER", "SALES_MANAGER", "SALES_REP", "KITCHEN_DISPLAY", "superadmin"],
       default: "sales",
     },
     // Fuente de Contífico asignada al usuario.

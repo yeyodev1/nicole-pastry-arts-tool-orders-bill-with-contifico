@@ -2,6 +2,7 @@ import type { Request, Response, NextFunction } from "express";
 import { HttpStatusCode } from "axios";
 import { models } from "../models";
 import { ContificoService } from "../services/contifico.service";
+import { getECDateRange } from "../utils/date.utils";
 
 const contificoService = new ContificoService();
 
@@ -364,6 +365,200 @@ export async function getSalesByResponsible(req: AuthRequest, res: Response, nex
     console.error("❌ Error in getSalesByResponsible:", error);
     res.status(HttpStatusCode.InternalServerError).send({
       message: "Error fetching sales stats.",
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return;
+  }
+}
+/**
+ * Comprehensive analytics for SuperAdmin dashboard
+ * Includes sales by branch, growth, avg ticket, etc.
+ */
+export async function getSuperAdminAnalytics(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { period = 'month', source } = req.query; // 'day', 'week', 'month', source: 'nicole' | 'sucree'
+
+    // --- Enforce Ecuador Time (UTC-5) ---
+    const now = new Date();
+    const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
+    const ecTime = new Date(utc + (3600000 * -5));
+
+    let daysToFetch = 30;
+    if (period === 'day') daysToFetch = 1;
+    if (period === 'week') daysToFetch = 7;
+
+    const pad = (n: number) => n.toString().padStart(2, '0');
+    const formatDate = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+
+    // Current period
+    const endCurrent = new Date(ecTime);
+    const startCurrent = new Date(ecTime);
+    startCurrent.setDate(startCurrent.getDate() - (daysToFetch - 1));
+
+    // Previous period
+    const endPrev = new Date(startCurrent);
+    endPrev.setDate(endPrev.getDate() - 1);
+    const startPrev = new Date(endPrev);
+    startPrev.setDate(startPrev.getDate() - (daysToFetch - 1));
+
+    const currentRange = {
+      start: new Date(formatDate(startCurrent) + "T00:00:00-05:00"),
+      end: new Date(formatDate(endCurrent) + "T23:59:59.999-05:00")
+    };
+
+    const prevRange = {
+      start: new Date(formatDate(startPrev) + "T00:00:00-05:00"),
+      end: new Date(formatDate(endPrev) + "T23:59:59.999-05:00")
+    };
+
+    // Base match stage
+    const baseMatch: any = {
+      invoiceStatus: { $ne: "VOID" }
+    };
+    if (source && (source === 'nicole' || source === 'sucree')) {
+      baseMatch.contificoSource = source;
+    }
+
+    // Aggregate Current Stats
+    const currentStats = await models.orders.aggregate([
+      {
+        $match: {
+          ...baseMatch,
+          createdAt: { $gte: currentRange.start, $lte: currentRange.end }
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          totalSales: { $sum: "$totalValue" },
+          count: { $sum: 1 },
+          avgTicket: { $avg: "$totalValue" }
+        }
+      }
+    ]);
+
+    // Aggregate Previous Stats
+    const prevStats = await models.orders.aggregate([
+      {
+        $match: {
+          ...baseMatch,
+          createdAt: { $gte: prevRange.start, $lte: prevRange.end }
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          totalSales: { $sum: "$totalValue" },
+          count: { $sum: 1 }
+        }
+      }
+    ]);
+
+    // Breakdown by Branch
+    const branchBreakdown = await models.orders.aggregate([
+      {
+        $match: {
+          ...baseMatch,
+          createdAt: { $gte: currentRange.start, $lte: currentRange.end }
+        }
+      },
+      {
+        $group: {
+          _id: {
+            branch: "$branch",
+            channel: "$salesChannel"
+          },
+          totalSales: { $sum: "$totalValue" },
+          count: { $sum: 1 }
+        }
+      },
+      { $sort: { totalSales: -1 } }
+    ]);
+
+    // Seller Ranking
+    const sellerRanking = await models.orders.aggregate([
+      {
+        $match: {
+          ...baseMatch,
+          createdAt: { $gte: currentRange.start, $lte: currentRange.end }
+        }
+      },
+      {
+        $group: {
+          _id: "$responsible",
+          totalSales: { $sum: "$totalValue" },
+          count: { $sum: 1 }
+        }
+      },
+      { $sort: { totalSales: -1 } },
+      { $limit: 10 }
+    ]);
+
+    // Top Products
+    const topProducts = await models.orders.aggregate([
+      {
+        $match: {
+          ...baseMatch,
+          createdAt: { $gte: currentRange.start, $lte: currentRange.end }
+        }
+      },
+      { $unwind: "$products" },
+      {
+        $group: {
+          _id: "$products.name",
+          totalQuantity: { $sum: "$products.quantity" },
+          totalRevenue: { $sum: { $multiply: ["$products.price", "$products.quantity"] } }
+        }
+      },
+      { $sort: { totalQuantity: -1 } },
+      { $limit: 10 }
+    ]);
+
+    const current = currentStats[0] || { totalSales: 0, count: 0, avgTicket: 0 };
+    const previous = prevStats[0] || { totalSales: 0, count: 0 };
+
+    const growth = previous.totalSales > 0 
+      ? ((current.totalSales - previous.totalSales) / previous.totalSales) * 100 
+      : 0;
+
+    res.status(HttpStatusCode.Ok).send({
+      message: "SuperAdmin analytics retrieved successfully.",
+      period,
+      range: {
+        current: currentRange,
+        previous: prevRange
+      },
+      kpis: {
+        totalSales: Math.round(current.totalSales * 100) / 100,
+        transactionCount: current.count,
+        avgTicket: Math.round(current.avgTicket * 100) / 100,
+        growth: Math.round(growth * 100) / 100,
+        previousSales: Math.round(previous.totalSales * 100) / 100
+      },
+      branchBreakdown: branchBreakdown.map(b => ({
+        branch: b._id.branch || 'Sin Asignar',
+        channel: b._id.channel || 'Desconocido',
+        isDigital: /online|web|whatsapp/i.test(b._id.channel || '') || /digital/i.test(b._id.branch || ''),
+        totalSales: Math.round(b.totalSales * 100) / 100,
+        count: b.count
+      })),
+      sellerRanking: sellerRanking.map(s => ({
+        name: s._id || 'Desconocido',
+        totalSales: Math.round(s.totalSales * 100) / 100,
+        count: s.count
+      })),
+      topProducts: topProducts.map(p => ({
+        name: p._id,
+        quantity: p.totalQuantity,
+        revenue: Math.round(p.totalRevenue * 100) / 100
+      }))
+    });
+    return;
+
+  } catch (error) {
+    console.error("❌ Error in getSuperAdminAnalytics:", error);
+    res.status(HttpStatusCode.InternalServerError).send({
+      message: "Error fetching superadmin analytics.",
       error: error instanceof Error ? error.message : String(error)
     });
     return;
