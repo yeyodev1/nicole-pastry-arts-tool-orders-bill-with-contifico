@@ -30,6 +30,10 @@ export interface IRawMaterial extends Document {
   lastInvoice?: string;
   lastEntryNumber?: string;
   lastMovementDate?: Date;
+
+  // Vínculo con Contífico
+  contificoId?: string;
+  contificoSource?: "nicole" | "sucree";
 }
 
 // Raw Material Schema
@@ -128,7 +132,16 @@ const RawMaterialSchema = new Schema<IRawMaterial>(
     lastMovementDate: {
       type: Date,
       required: false,
-    }
+    },
+    contificoId: {
+      type: String,
+      trim: true,
+      index: true,
+    },
+    contificoSource: {
+      type: String,
+      enum: ["nicole", "sucree"],
+    },
   },
   {
     timestamps: true,
