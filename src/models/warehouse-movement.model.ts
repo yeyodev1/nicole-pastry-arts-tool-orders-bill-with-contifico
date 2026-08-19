@@ -17,6 +17,7 @@ export interface IWarehouseMovement extends Document {
   invoiceDueDate?: Date;
   isPaid?: boolean;
   batchId?: string;
+  expiryDate?: Date; // For IN — fecha de caducidad del lote recibido
 }
 
 const WarehouseMovementSchema = new Schema<IWarehouseMovement>(
@@ -81,6 +82,7 @@ const WarehouseMovementSchema = new Schema<IWarehouseMovement>(
     invoiceDueDate: { type: Date },
     isPaid:         { type: Boolean, default: false },
     batchId:        { type: String, trim: true, index: true },
+    expiryDate:     { type: Date, index: true },
   },
   {
     timestamps: true,

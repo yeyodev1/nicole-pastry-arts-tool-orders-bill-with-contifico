@@ -5,6 +5,9 @@ export interface ISupplierOrderItem {
   name: string;
   quantity: number;
   unit: string;
+  quantityReceived?: number;
+  itemStatus?: "OK" | "MISSING" | "DAMAGED";
+  itemNote?: string;
 }
 
 export interface ISupplierOrder extends Document {
@@ -15,6 +18,13 @@ export interface ISupplierOrder extends Document {
   status: "PENDING" | "SENT" | "RECEIVED" | "CANCELLED";
   whatsappMessage?: string;
   totalEstimatedValue?: number;
+  // Recepción (perfil receptor)
+  receptionStatus?: "PENDING" | "RECEIVED" | "PROBLEM";
+  receivedAt?: Date;
+  receivedBy?: string;
+  receptionNotes?: string;
+  invoicePhotoUrl?: string; // Foto de la factura como evidencia
+  invoiceRef?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -24,6 +34,9 @@ const SupplierOrderItemSchema = new Schema({
   name: { type: String, required: true },
   quantity: { type: Number, required: true },
   unit: { type: String, required: true },
+  quantityReceived: { type: Number, min: 0 },
+  itemStatus: { type: String, enum: ["OK", "MISSING", "DAMAGED"] },
+  itemNote: { type: String, trim: true },
 });
 
 const SupplierOrderSchema = new Schema<ISupplierOrder>(
@@ -39,6 +52,16 @@ const SupplierOrderSchema = new Schema<ISupplierOrder>(
     },
     whatsappMessage: { type: String },
     totalEstimatedValue: { type: Number, default: 0 },
+    receptionStatus: {
+      type: String,
+      enum: ["PENDING", "RECEIVED", "PROBLEM"],
+      default: "PENDING",
+    },
+    receivedAt: { type: Date },
+    receivedBy: { type: String, trim: true },
+    receptionNotes: { type: String, trim: true },
+    invoicePhotoUrl: { type: String, trim: true },
+    invoiceRef: { type: String, trim: true },
   },
   { timestamps: true, versionKey: false }
 );

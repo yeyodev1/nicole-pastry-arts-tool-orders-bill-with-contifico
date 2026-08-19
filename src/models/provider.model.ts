@@ -14,6 +14,8 @@ export interface IProvider extends Document {
   phone?: string;
   address?: string;
   ruc?: string;
+  creditDays: number;
+  contificoPersonaId?: string;
   commercialAgents: ICommercialAgent[];
 }
 
@@ -50,6 +52,16 @@ const ProviderSchema = new Schema<IProvider>(
       trim: true,
     },
     ruc: {
+      type: String,
+      trim: true,
+    },
+    // Días de crédito que otorga el proveedor (0 = contado)
+    creditDays: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    contificoPersonaId: {
       type: String,
       trim: true,
     },

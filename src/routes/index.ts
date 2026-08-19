@@ -17,6 +17,9 @@ import ProductionSettingsRouter from "./production-settings.router";
 import ProviderCategoryRouter from "./provider-category.router";
 import WarehouseSettingsRouter from "./warehouse-settings.router";
 import BranchRouter from "./branch.router";
+import PayablesRouter from "./payables.router";
+import RequisitionRouter from "./requisition.router";
+import WarehouseLoanRouter from "./warehouse-loan.router";
 
 import { WarehouseRouter } from "./warehouse.routes";
 
@@ -43,6 +46,9 @@ function routerApi(app: Application) {
 
   router.use("/provider-categories", ProviderCategoryRouter);
   router.use("/warehouse", WarehouseRouter);
+  router.use("/warehouse-loans", WarehouseLoanRouter);
+  router.use("/payables", PayablesRouter);
+  router.use("/requisitions", RequisitionRouter);
 }
 
 export default routerApi;

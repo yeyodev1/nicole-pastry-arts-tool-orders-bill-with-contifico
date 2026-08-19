@@ -85,6 +85,7 @@ async function createMovement(req: IAuthRequest, res: Response, next: NextFuncti
       responsible,
       observation,
       date: req.body.date ? new Date(req.body.date) : new Date(),
+      expiryDate: type === "IN" && req.body.expiryDate ? new Date(req.body.expiryDate) : undefined,
     });
 
     await Promise.all([movement.save(), material.save()]);
@@ -288,6 +289,7 @@ async function createBatch(req: IAuthRequest, res: Response, next: NextFunction)
         invoiceDueDate: type === "IN" ? invoiceDueDate : undefined,
         isPaid: false,
         batchId,
+        expiryDate: type === "IN" && item.expiryDate ? new Date(item.expiryDate) : undefined,
       });
 
       movementDocs.push(movement);
