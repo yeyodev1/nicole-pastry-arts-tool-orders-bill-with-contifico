@@ -7,6 +7,8 @@ export interface IUser extends Document {
   password?: string; // Optional because we might auto-generate or use other auth methods later
   role: "admin" | "sales" | "production" | "RetailManager" | "SUPPLY_CHAIN_MANAGER" | "SALES_MANAGER" | "SALES_REP" | "KITCHEN_DISPLAY" | "WAREHOUSE_RECEIVER" | "superadmin";
   contificoSource?: 'nicole' | 'sucree' | 'both';
+  resetPasswordToken?: string; // sha256 del token enviado por email
+  resetPasswordExpires?: Date;
 }
 
 // User Schema
@@ -39,6 +41,14 @@ const UserSchema = new Schema<IUser>(
       type: String,
       enum: ['nicole', 'sucree', 'both'],
       default: 'nicole',
+    },
+    resetPasswordToken: {
+      type: String,
+      select: false,
+    },
+    resetPasswordExpires: {
+      type: Date,
+      select: false,
     },
   },
   {

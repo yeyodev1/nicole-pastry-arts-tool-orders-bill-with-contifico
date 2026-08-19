@@ -1,7 +1,11 @@
 import bcrypt from "bcryptjs";
+import crypto from "crypto";
 import { models } from "../models";
 import { IUser } from "../models/user.model";
 import { generateToken } from "../utils/jwt.handle";
+import { EmailService } from "./email.service";
+
+const FRONTEND_URL = process.env.FRONTEND_URL || "https://app.nicole.com.ec";
 
 export class UserService {
   /**
@@ -94,6 +98,53 @@ export class UserService {
   async deleteUser(id: string) {
     const result = await models.users.findByIdAndDelete(id);
     if (!result) throw new Error("USER_NOT_FOUND");
+    return true;
+  }
+
+  /**
+   * Solicita reset de contraseña: genera token (1h), lo guarda hasheado
+   * y envía el email con el link. No revela si el email existe.
+   */
+  async requestPasswordReset(email: string) {
+    const user = await models.users.findOne({ email: email.toLowerCase().trim() });
+    if (!user) return; // Silencioso: no revelar existencia de cuentas
+
+    const rawToken = crypto.randomBytes(32).toString("hex");
+    const hashedToken = crypto.createHash("sha256").update(rawToken).digest("hex");
+
+    user.resetPasswordToken = hashedToken;
+    user.resetPasswordExpires = new Date(Date.now() + 60 * 60 * 1000); // 1 hora
+    await user.save();
+
+    const resetUrl = `${FRONTEND_URL}/reset-password?token=${rawToken}`;
+    const emailService = new EmailService();
+    await emailService.sendPasswordResetEmail(user.email, user.name, resetUrl);
+  }
+
+  /**
+   * Restablece la contraseña con un token válido y no expirado.
+   */
+  async resetPassword(token: string, newPassword: string) {
+    if (!token || !newPassword || newPassword.length < 8) {
+      throw new Error("INVALID_RESET_REQUEST");
+    }
+
+    const hashedToken = crypto.createHash("sha256").update(token).digest("hex");
+
+    const user = await models.users
+      .findOne({
+        resetPasswordToken: hashedToken,
+        resetPasswordExpires: { $gt: new Date() },
+      })
+      .select("+resetPasswordToken +resetPasswordExpires");
+
+    if (!user) throw new Error("INVALID_OR_EXPIRED_TOKEN");
+
+    user.password = await bcrypt.hash(newPassword, 10);
+    user.resetPasswordToken = undefined;
+    user.resetPasswordExpires = undefined;
+    await user.save();
+
     return true;
   }
 
