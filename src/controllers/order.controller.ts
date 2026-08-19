@@ -5,7 +5,39 @@ import { ContificoService } from "../services/contifico.service";
 import { getECDateRange } from "../utils/date.utils";
 import { AuthRequest } from "../types/AuthRequest";
 
-const contificoService = new ContificoService();
+const nicoleContificoService = new ContificoService('nicole');
+const sucreeContificoService = new ContificoService('sucree');
+
+/** Pick the right Contifico account based on the order's stored source. */
+const getContificoService = (source?: string) =>
+  source === 'sucree' ? sucreeContificoService : nicoleContificoService;
+
+/**
+ * Runs an invoice operation with the correct Contifico account.
+ * If the service rejects with "no pertenece a la empresa" (wrong company),
+ * auto-retries with the alternate service and persists the correct source on the order.
+ */
+async function withCorrectService<T>(
+  orderId: string,
+  storedSource: string | undefined,
+  operation: (svc: ContificoService) => Promise<T>
+): Promise<T> {
+  const primarySvc = getContificoService(storedSource);
+  try {
+    return await operation(primarySvc);
+  } catch (error: any) {
+    const msg: string = error.message || String(error);
+    if (msg.includes('no pertenece a la empresa')) {
+      const alternateSvc = primarySvc.source === 'sucree' ? nicoleContificoService : sucreeContificoService;
+      console.log(`ℹ️ [${orderId}] ${primarySvc.source} rechazó el documento, reintentando con ${alternateSvc.source}...`);
+      const result = await operation(alternateSvc);
+      // Persist the correct source so all future calls hit the right account
+      await models.orders.findByIdAndUpdate(orderId, { contificoSource: alternateSvc.source });
+      return result;
+    }
+    throw error;
+  }
+}
 
 export async function createOrder(req: AuthRequest, res: Response, next: NextFunction) {
   try {
@@ -70,6 +102,11 @@ export async function createOrder(req: AuthRequest, res: Response, next: NextFun
         return;
       }
     }
+
+    // Persist the Contifico source from the cart products so invoice generation
+    // always uses the right account (Nicole vs Sucree).
+    const firstProductSource = orderData.products?.[0]?.source;
+    orderData.contificoSource = firstProductSource === 'sucree' ? 'sucree' : 'nicole';
 
     // Default defaults
     if (!orderData.orderDate) orderData.orderDate = new Date();
@@ -434,7 +471,8 @@ export async function processPendingInvoices(req: AuthRequest, res: Response, ne
         // Actually earlier we modified createPerson, but createInvoice also sends client data.
 
         // 2. Create Invoice
-        const invoiceResponse = await contificoService.createInvoice(order);
+        const orderSvc = getContificoService((order as any).contificoSource);
+        const invoiceResponse = await orderSvc.createInvoice(order);
 
         // 3. Update Order
         if (invoiceResponse.error) {
@@ -448,13 +486,12 @@ export async function processPendingInvoices(req: AuthRequest, res: Response, ne
         order.invoiceInfo = invoiceResponse;
         await order.save();
 
-        // 3.1 Trigger SRI Authorization (Manual Trigger Feature)
-        try {
-          // We call this immediately so the user doesn't have to wait for the Contífico hourly script
-          await contificoService.sendToSri(invoiceResponse.id);
-        } catch (sriError) {
-          console.warn(`⚠️ Failed to trigger SRI for order ${order._id} (non-blocking)`);
-        }
+        // 3.1 Trigger SRI Authorization y registrar timestamp
+        // sendToSriWhenReady espera a que Contifico termine de firmar antes de enviar al SRI
+        order.invoiceSentToSriAt = new Date();
+        await order.save();
+        orderSvc.sendToSriWhenReady(invoiceResponse.id)
+          .catch(sriError => console.warn(`⚠️ Failed to trigger SRI for order ${order._id} (non-blocking)`, sriError));
 
         // 4. Register Collection AUTOMATICALLY if payment details exist
         // SKIP if it's Credit (CR)
@@ -468,7 +505,7 @@ export async function processPendingInvoices(req: AuthRequest, res: Response, ne
               cuenta_bancaria_id: resolveBankId(order.paymentDetails.cuenta_bancaria_id)
             };
 
-            await contificoService.registerCollection(invoiceResponse.id, collectionPayload);
+            await orderSvc.registerCollection(invoiceResponse.id, collectionPayload);
           } catch (collectionError: any) {
             console.error(`⚠️ Failed to register automatic collection for order ${order._id}:`, collectionError.message);
             // We don't fail the invoice process, just log it. 
@@ -534,17 +571,25 @@ export async function updateInvoiceData(req: AuthRequest, res: Response, next: N
       return;
     }
 
-    // Block edits if already processed
-    if (order.invoiceStatus === "PROCESSED") {
+    // Bloquear edición solo si la factura ya está AUTORIZADA por el SRI.
+    // Si está PROCESSED pero no autorizada (firmado=false, autorizacion=null), permitir edición
+    // para que el usuario pueda corregir datos y luego regenerar.
+    const invoiceInfo = order.invoiceInfo as any;
+    // autorizacion="" es el valor inicial de Contifico (no autorizada) — solo bloquear con valor real
+    const isAuthorized = !!(invoiceInfo?.autorizacion);
+    if (order.invoiceStatus === "PROCESSED" && isAuthorized) {
       res.status(HttpStatusCode.BadRequest).send({
-        message: "Cannot edit invoice data. Invoice has already been processed with Contífico."
+        message: "No se pueden editar los datos de facturación: la factura ya fue autorizada por el SRI."
       });
       return;
     }
 
-    // Update fields
+    // Update fields — sanitize RUC/cedula: strip all spaces before saving
     if (invoiceNeeded !== undefined) order.invoiceNeeded = invoiceNeeded;
-    if (invoiceData) order.invoiceData = invoiceData;
+    if (invoiceData) {
+      if (invoiceData.ruc) invoiceData.ruc = invoiceData.ruc.replace(/\s+/g, "");
+      order.invoiceData = invoiceData;
+    }
 
     // Reset status to PENDING if it was ERROR, so it gets picked up again
     if (order.invoiceNeeded) {
@@ -790,7 +835,11 @@ export async function registerCollection(req: AuthRequest, res: Response, next: 
       cuenta_bancaria_id: collectionData.cuenta_bancaria_id
     };
 
-    const result = await contificoService.registerCollection(documentId, payloadToSend);
+    const result = await withCorrectService(
+      id,
+      (order as any).contificoSource,
+      svc => svc.registerCollection(documentId, payloadToSend)
+    );
 
     res.status(HttpStatusCode.Created).send({
       message: "Collection registered successfully in Contífico.",
@@ -833,8 +882,32 @@ export async function generateInvoice(req: AuthRequest, res: Response, next: Nex
     }
 
 
-    // Create Invoice
-    const invoiceResponse = await contificoService.createInvoice(order);
+    // Create Invoice — use the Contifico account that matches the order's products.
+    // If Contifico rejects with "no pertenece a la empresa", the stored source is wrong
+    // (e.g. legacy order without contificoSource, or products from the other brand).
+    // Auto-retry with the alternate service and persist the correct source.
+    let svc = getContificoService((order as any).contificoSource);
+    let invoiceResponse = await svc.createInvoice(order);
+
+    const isWrongCompanyError = (resp: any) => {
+      const msg = typeof resp?.error === 'object'
+        ? (resp.error?.mensaje || JSON.stringify(resp.error))
+        : String(resp?.error || '');
+      return msg.includes('no pertenece a la empresa');
+    };
+
+    if (invoiceResponse.error && isWrongCompanyError(invoiceResponse)) {
+      // The current service doesn't own these products — flip to the other account.
+      const alternateSvc = svc.source === 'sucree' ? nicoleContificoService : sucreeContificoService;
+      const alternateSource = alternateSvc.source;
+      console.log(`ℹ️ Order ${id}: ${svc.source} rejected product IDs, retrying with ${alternateSource}...`);
+      svc = alternateSvc;
+      invoiceResponse = await svc.createInvoice(order);
+      if (!invoiceResponse.error) {
+        // Persist correct source so future operations (SRI, PDF, collection) use the right account
+        await models.orders.findByIdAndUpdate(id, { contificoSource: alternateSource });
+      }
+    }
 
     if (invoiceResponse.error) {
       // Extract human-readable message from Contifico's error response
@@ -862,8 +935,13 @@ export async function generateInvoice(req: AuthRequest, res: Response, next: Nex
     order.invoiceInfo = invoiceResponse;
     await order.save();
 
-    // Trigger SRI (Non-blocking)
-    contificoService.sendToSri(invoiceResponse.id).catch(err => console.error("SRI Error:", err));
+    // Trigger SRI (Non-blocking) — sendToSriWhenReady espera firma de Contifico antes de enviar al SRI
+    const sriSentAt = new Date();
+    svc.sendToSriWhenReady(invoiceResponse.id)
+      .then(async () => {
+        await models.orders.findByIdAndUpdate(id, { invoiceSentToSriAt: sriSentAt });
+      })
+      .catch(err => console.error("SRI Error:", err));
 
     // Auto-Register Collection if exists
     // SKIP if it's Credit (CR)
@@ -874,7 +952,7 @@ export async function generateInvoice(req: AuthRequest, res: Response, next: Nex
           monto: invoiceResponse.total,
           cuenta_bancaria_id: resolveBankId(order.paymentDetails.cuenta_bancaria_id)
         };
-        await contificoService.registerCollection(invoiceResponse.id, collectionPayload);
+        await svc.registerCollection(invoiceResponse.id, collectionPayload);
       } catch (err) {
         console.error("Auto-collection error:", err);
       }
@@ -907,6 +985,139 @@ export async function generateInvoice(req: AuthRequest, res: Response, next: Nex
 }
 
 /**
+ * Regenerate invoice: repara una factura rota (subtotal_12=0) vía PUT en Contífico.
+ * La API de Contífico no soporta DELETE de documentos — usamos PUT para corregir
+ * los valores y que Contífico re-firme y re-envíe al SRI automáticamente.
+ * POST /api/orders/:id/invoice/regenerate
+ */
+export async function regenerateInvoice(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    const { id } = req.params;
+    const order = await models.orders.findById(id);
+
+    if (!order) {
+      res.status(HttpStatusCode.NotFound).send({ message: "Order not found." });
+      return;
+    }
+
+    const existingDocId = (order as any).invoiceInfo?.id;
+    const forceNew = req.query.force === 'true';
+    let svc = getContificoService((order as any).contificoSource);
+    let invoiceResponse: any;
+
+    // Si se pasa invoiceDataOverride en el body, actualizar los datos de factura antes de crear
+    const { invoiceDataOverride } = req.body || {};
+    if (invoiceDataOverride) {
+      (order as any).invoiceData = invoiceDataOverride;
+    }
+
+    // Si el documento ya fue firmado pero nunca autorizado por SRI, está "contaminado"
+    // por intentos fallidos — crear documento nuevo en lugar de reparar vía PUT.
+    const docFirmadoSinAutorizacion =
+      (order as any).invoiceInfo?.firmado && !(order as any).invoiceInfo?.autorizacion;
+
+    if (existingDocId && !forceNew && !docFirmadoSinAutorizacion) {
+      // Step 1: Intentar reparar via PUT (corrige subtotal_12 y re-firma)
+      console.log(`[regenerate] Repairing Contifico doc ${existingDocId} via PUT...`);
+      try {
+        invoiceResponse = await svc.repairDocument(existingDocId, order);
+        console.log(`✅ [regenerate] PUT repair succeeded for doc ${existingDocId}`);
+      } catch (repairErr: any) {
+        // Si PUT falla (ej: doc ya autorizado o no se puede modificar),
+        // crear un documento nuevo en Contífico
+        console.warn(`⚠️ [regenerate] PUT repair failed: ${repairErr.message}. Creating new document...`);
+        invoiceResponse = null;
+      }
+    } else if (existingDocId && (forceNew || docFirmadoSinAutorizacion)) {
+      console.log(`[regenerate] Creating new Contifico doc (forceNew=${forceNew}, firmadoSinAuth=${docFirmadoSinAutorizacion})...`);
+    }
+
+    if (!invoiceResponse) {
+      // Step 2: Reset state y crear nueva factura (fallback)
+      (order as any).invoiceStatus = "PENDING";
+      (order as any).invoiceInfo = null;
+      (order as any).invoiceError = null;
+      (order as any).invoiceSentToSriAt = null;
+      (order as any).invoiceNeeded = true;
+      await order.save();
+
+      invoiceResponse = await svc.createInvoice(order);
+    }
+
+    const isWrongCompanyError = (resp: any) => {
+      const msg = typeof resp?.error === 'object'
+        ? (resp.error?.mensaje || JSON.stringify(resp.error))
+        : String(resp?.error || '');
+      return msg.includes('no pertenece a la empresa');
+    };
+
+    if (invoiceResponse.error && isWrongCompanyError(invoiceResponse)) {
+      const alternateSvc = svc.source === 'sucree' ? nicoleContificoService : sucreeContificoService;
+      svc = alternateSvc;
+      invoiceResponse = await svc.createInvoice(order);
+      if (!invoiceResponse.error) {
+        await models.orders.findByIdAndUpdate(id, { contificoSource: alternateSvc.source });
+      }
+    }
+
+    if (invoiceResponse.error) {
+      let contificoMensaje = '';
+      const rawError = invoiceResponse.error;
+      if (typeof rawError === 'object' && rawError !== null) {
+        contificoMensaje = rawError.mensaje || JSON.stringify(rawError);
+      } else {
+        contificoMensaje = String(rawError);
+      }
+      const err = new Error(contificoMensaje) as any;
+      err.isContificoError = true;
+      throw err;
+    }
+
+    order.invoiceStatus = "PROCESSED";
+    order.invoiceInfo = invoiceResponse;
+    await order.save();
+
+    const sriSentAt = new Date();
+    svc.sendToSriWhenReady(invoiceResponse.id)
+      .then(async () => {
+        await models.orders.findByIdAndUpdate(id, { invoiceSentToSriAt: sriSentAt });
+      })
+      .catch(err => console.error("SRI Error (regenerate):", err));
+
+    if ((order as any).paymentDetails?.monto && (order as any).paymentDetails?.forma_cobro !== 'CR') {
+      try {
+        const collectionPayload = {
+          ...(order as any).paymentDetails,
+          monto: invoiceResponse.total,
+          cuenta_bancaria_id: resolveBankId((order as any).paymentDetails.cuenta_bancaria_id)
+        };
+        await svc.registerCollection(invoiceResponse.id, collectionPayload);
+      } catch (err) {
+        console.error("Auto-collection error (regenerate):", err);
+      }
+    }
+
+    res.status(HttpStatusCode.Ok).send({ message: "Invoice regenerated successfully.", order });
+    return;
+
+  } catch (error: any) {
+    console.error("Error regenerating invoice:", error);
+    try {
+      await models.orders.findByIdAndUpdate(req.params.id, { invoiceStatus: 'ERROR', invoiceError: error.message });
+    } catch (e) { }
+    const contificoMessage = error.isContificoError ? error.message : null;
+    res.status(HttpStatusCode.InternalServerError).send({
+      message: contificoMessage
+        ? `Error de Contífico: ${contificoMessage}`
+        : "Error al regenerar la factura.",
+      contificoMessage: contificoMessage || null,
+      error: error.message || String(error)
+    });
+    return;
+  }
+}
+
+/**
  * Get Invoice PDF Link
  * GET /api/orders/:id/invoice-pdf
  */
@@ -920,7 +1131,11 @@ export async function getInvoicePdf(req: AuthRequest, res: Response, next: NextF
       return;
     }
 
-    const doc = await contificoService.getDocument(order.invoiceInfo.id);
+    const doc = await withCorrectService(
+      id,
+      (order as any).contificoSource,
+      svc => svc.getDocument(order.invoiceInfo.id)
+    );
 
     res.status(HttpStatusCode.Ok).send({
       message: "Invoice retrieved",
@@ -952,7 +1167,11 @@ export async function getInvoiceAuthStatus(req: AuthRequest, res: Response, next
       return;
     }
 
-    const estado = await contificoService.getDocumentEstado(order.invoiceInfo.id);
+    const estado = await withCorrectService(
+      id,
+      (order as any).contificoSource,
+      svc => svc.getDocumentEstado(order.invoiceInfo.id)
+    );
     res.status(HttpStatusCode.Ok).send(estado);
     return;
   } catch (error: any) {
@@ -976,11 +1195,490 @@ export async function triggerInvoiceAuth(req: AuthRequest, res: Response, next: 
       return;
     }
 
-    const result = await contificoService.sendToSri(order.invoiceInfo.id);
+    const result = await withCorrectService(
+      id,
+      (order as any).contificoSource,
+      svc => svc.sendToSri(order.invoiceInfo.id)
+    );
+
+    // sendToSri retorna { error: ... } sin lanzar excepción — debemos chequearlo explícitamente
+    if (result?.error) {
+      const errorMsg = typeof result.error === 'object'
+        ? (result.error?.mensaje || result.error?.detail || JSON.stringify(result.error))
+        : String(result.error);
+      console.error(`❌ SRI authorize error for order ${id}:`, result.error);
+      res.status(HttpStatusCode.BadGateway).send({
+        message: `Error al enviar al SRI: ${errorMsg}`,
+        contificoError: result.error
+      });
+      return;
+    }
+
+    // Registrar el momento en que se envió al SRI para detectar si supera 1 hora sin aprobar
+    order.invoiceSentToSriAt = new Date();
+    await order.save();
     res.status(HttpStatusCode.Ok).send({ message: "Autorización enviada al SRI.", result });
     return;
   } catch (error: any) {
     console.error("Error triggering invoice auth:", error);
+    res.status(HttpStatusCode.InternalServerError).send({ message: error.message });
+    return;
+  }
+}
+
+/**
+ * POST /api/orders/invoice/batch-reauthorize
+ * Finds all PROCESSED orders with no SRI authorization and attempts to re-authorize them.
+ * Processes up to 20 orders at a time.
+ */
+export async function batchReauthorizeInvoices(req: AuthRequest, res: Response, next: NextFunction) {
+  type OrderResult = {
+    orderId: string;
+    customerName: string;
+    action: "skipped" | "sentToSri" | "regenerated" | "failed";
+    detail?: string;
+  };
+
+  const summary = {
+    found: 0,
+    sentToSri: 0,
+    regenerated: 0,
+    skipped: 0,
+    failed: 0,
+    results: [] as OrderResult[]
+  };
+
+  // Helper: extract readable error string from Contifico/SRI error objects
+  const extractErr = (e: any): string => {
+    if (!e) return "unknown error";
+    if (typeof e === "string") return e;
+    return e.mensaje || e.detail || e.message || JSON.stringify(e);
+  };
+
+  // Helper: fire-and-forget SRI send with DB error persistence
+  const fireSriSend = (svc: any, docId: string, orderId: string, sriSentAt: Date) => {
+    svc.sendToSriWhenReady(docId)
+      .then(async (sriResult: any) => {
+        if (sriResult?.error) {
+          const errMsg = extractErr(sriResult.error);
+          await models.orders.findByIdAndUpdate(orderId, {
+            invoiceStatus: "ERROR",
+            invoiceError: `SRI: ${errMsg}`
+          });
+          console.error(`❌ SRI rejected [${orderId}]: ${errMsg}`);
+        } else {
+          await models.orders.findByIdAndUpdate(orderId, {
+            invoiceSentToSriAt: sriSentAt,
+            invoiceError: null
+          });
+        }
+      })
+      .catch((err: any) => console.error(`SRI Error (batch-reauth) [${orderId}]:`, err));
+  };
+
+  // Process a single order — returns an OrderResult
+  const processOrder = async (order: any): Promise<OrderResult> => {
+    const orderId = String(order._id);
+    const customerName: string = order.customerName || orderId;
+
+    try {
+      // Case A: no invoiceInfo at all → create from scratch
+      if (!order.invoiceInfo?.id) {
+        order.invoiceStatus = "PENDING";
+        order.invoiceInfo = null;
+        order.invoiceError = null;
+        order.invoiceSentToSriAt = null;
+        order.invoiceNeeded = true;
+        await order.save();
+
+        const invoiceResponse = await withCorrectService(orderId, order.contificoSource, s => s.createInvoice(order));
+        if (invoiceResponse?.error) {
+          const errMsg = extractErr(invoiceResponse.error);
+          order.invoiceStatus = "ERROR";
+          order.invoiceError = errMsg;
+          await order.save();
+          return { orderId, customerName, action: "failed", detail: errMsg };
+        }
+        order.invoiceStatus = "PROCESSED";
+        order.invoiceInfo = invoiceResponse;
+        order.invoiceError = null;
+        await order.save();
+        fireSriSend(getContificoService(order.contificoSource), invoiceResponse.id, orderId, new Date());
+        return { orderId, customerName, action: "regenerated", detail: `Nueva factura: ${invoiceResponse.id}` };
+      }
+
+      // Case B: has invoiceInfo — check estado in Contifico
+      let estado: any;
+      try {
+        estado = await withCorrectService(orderId, order.contificoSource,
+          svc => svc.getDocumentEstado(order.invoiceInfo.id)
+        );
+      } catch (estadoErr: any) {
+        const msg: string = estadoErr?.message || String(estadoErr);
+        // Document no longer exists in Contifico — recreate from scratch
+        if (msg.toLowerCase().includes('no existe') || msg.toLowerCase().includes('not found')) {
+          order.invoiceStatus = "PENDING";
+          order.invoiceInfo = null;
+          order.invoiceError = null;
+          order.invoiceSentToSriAt = null;
+          order.invoiceNeeded = true;
+          await order.save();
+          const invoiceResponse = await withCorrectService(orderId, order.contificoSource, s => s.createInvoice(order));
+          if (invoiceResponse?.error) {
+            const errMsg = extractErr(invoiceResponse.error);
+            order.invoiceStatus = "ERROR";
+            order.invoiceError = errMsg;
+            await order.save();
+            return { orderId, customerName, action: "failed", detail: errMsg };
+          }
+          order.invoiceStatus = "PROCESSED";
+          order.invoiceInfo = invoiceResponse;
+          order.invoiceError = null;
+          await order.save();
+          fireSriSend(getContificoService(order.contificoSource), invoiceResponse.id, orderId, new Date());
+          return { orderId, customerName, action: "regenerated", detail: `Recreada desde cero: ${invoiceResponse.id}` };
+        }
+        throw estadoErr;
+      }
+      const estadoValue: string = estado?.estado || estado?.Estado || "";
+
+      if (estadoValue === "Autorizado") {
+        // El endpoint /estado/ no devuelve el número de autorización — hay que
+        // consultar el documento completo para obtenerlo y guardarlo en la BD.
+        try {
+          const fullDoc = await withCorrectService(orderId, order.contificoSource,
+            svc => svc.getDocument(order.invoiceInfo.id)
+          );
+          if (fullDoc?.autorizacion) {
+            await models.orders.findByIdAndUpdate(orderId, {
+              "invoiceInfo.autorizacion": fullDoc.autorizacion,
+              invoiceError: null
+            });
+          }
+        } catch { /* si falla la consulta, el doc ya está autorizado; continua */ }
+        return { orderId, customerName, action: "skipped", detail: "Ya autorizado en Contifico" };
+      }
+
+      if (estadoValue === "Enviado SRI") {
+        // If subtotal_12 is 0, the doc was sent to SRI with a bug — SRI will reject it
+        // Repair it now before SRI responds (PUT resets the doc so it can be corrected)
+        const storedSub12 = String((order.invoiceInfo as any)?.subtotal_12 ?? "");
+        if (storedSub12 !== "0.0" && storedSub12 !== "0") {
+          return { orderId, customerName, action: "skipped", detail: "Enviado al SRI, esperando respuesta" };
+        }
+        // subtotal_12 = 0 → fall through to repair/recreate block below
+      }
+
+      if (estadoValue === "Firmado") {
+        // If subtotal_12 is 0 the doc was created with the old bug → repair it first
+        const storedSubtotal12 = String((order.invoiceInfo as any)?.subtotal_12 ?? "");
+        const needsRepair = storedSubtotal12 === "0.0" || storedSubtotal12 === "0";
+        if (!needsRepair) {
+          const result = await withCorrectService(orderId, order.contificoSource,
+            s => s.sendToSri(order.invoiceInfo.id)
+          );
+          if ((result as any)?.error) {
+            const errMsg = extractErr((result as any).error);
+            order.invoiceStatus = "ERROR";
+            order.invoiceError = errMsg;
+            await order.save();
+            return { orderId, customerName, action: "failed", detail: errMsg };
+          }
+          order.invoiceSentToSriAt = new Date();
+          order.invoiceError = null;
+          await order.save();
+          return { orderId, customerName, action: "sentToSri", detail: `Doc: ${order.invoiceInfo.id}` };
+        }
+        // subtotal_12 = 0 → fall through to repair/recreate block below
+      }
+
+      // Case C: No Firmado or unknown estado → repair or recreate
+      const svc = getContificoService(order.contificoSource);
+      const existingDocId = order.invoiceInfo?.id;
+      let invoiceResponse: any = null;
+
+      if (existingDocId) {
+        try { invoiceResponse = await svc.repairDocument(existingDocId, order); } catch { invoiceResponse = null; }
+      }
+
+      if (!invoiceResponse || invoiceResponse?.error) {
+        // Repair failed — check if this is an inventory duplicate-entry lock
+        const repairErrMsg = invoiceResponse ? extractErr(invoiceResponse.error) : "";
+        const isInventoryLock = repairErrMsg.toLowerCase().includes("duplicate entry");
+
+        if (isInventoryLock) {
+          // Contifico inventory movements already exist for this doc — cannot repair or recreate.
+          // Preserve the original invoiceInfo.id so we don't lose the Contifico reference.
+          // The doc will need manual intervention (void + recreate) in Contifico.
+          order.invoiceStatus = "ERROR";
+          order.invoiceError = `Bloqueo de inventario Contifico: ${repairErrMsg}`;
+          await order.save();
+          return { orderId, customerName, action: "failed", detail: `Bloqueo inventario: ${repairErrMsg.slice(0, 120)}` };
+        }
+
+        // Fall back to full recreate (only when it's not an inventory lock)
+        const savedInvoiceInfo = order.invoiceInfo; // preserve in case create also fails
+        order.invoiceStatus = "PENDING";
+        order.invoiceInfo = null;
+        order.invoiceError = null;
+        order.invoiceSentToSriAt = null;
+        order.invoiceNeeded = true;
+        await order.save();
+        invoiceResponse = await withCorrectService(orderId, order.contificoSource, s => s.createInvoice(order));
+
+        if (!invoiceResponse || invoiceResponse?.error) {
+          // Restore original invoiceInfo so we don't lose the Contifico doc reference
+          order.invoiceStatus = "ERROR";
+          order.invoiceInfo = savedInvoiceInfo;
+          order.invoiceError = invoiceResponse ? extractErr(invoiceResponse.error) : "createInvoice returned null";
+          await order.save();
+          return { orderId, customerName, action: "failed", detail: order.invoiceError };
+        }
+      }
+
+      if (invoiceResponse?.error) {
+        const errMsg = extractErr(invoiceResponse.error);
+        order.invoiceStatus = "ERROR";
+        order.invoiceError = errMsg;
+        await order.save();
+        return { orderId, customerName, action: "failed", detail: errMsg };
+      }
+
+      order.invoiceStatus = "PROCESSED";
+      order.invoiceInfo = invoiceResponse;
+      order.invoiceError = null;
+      await order.save();
+      fireSriSend(svc, invoiceResponse.id, orderId, new Date());
+      return { orderId, customerName, action: "regenerated", detail: `Doc: ${invoiceResponse.id} (estado anterior: ${estadoValue || "sin estado"})` };
+
+    } catch (stepError: any) {
+      const errMsg = stepError?.message || String(stepError);
+      console.error(`❌ [batch-reauthorize] Order ${orderId}:`, errMsg);
+      try {
+        order.invoiceStatus = "ERROR";
+        order.invoiceError = errMsg;
+        await order.save();
+      } catch { /* ignore */ }
+      return { orderId, customerName, action: "failed", detail: errMsg };
+    }
+  };
+
+  try {
+    // Fetch ALL non-authorized orders (PROCESSED + ERROR, no limit)
+    // Include autorizacion="" because Contifico initializes the field as empty string
+    const orders = await models.orders.find({
+      invoiceNeeded: true,
+      invoiceStatus: { $in: ["PROCESSED", "ERROR"] },
+      "invoiceInfo.autorizacion": { $in: [null, undefined, ""] },
+      voidedAt: null
+    });
+
+    summary.found = orders.length;
+    console.log(`🔄 batch-reauthorize: found ${orders.length} orders to process`);
+
+    // Process in parallel chunks of 5 to avoid overwhelming Contifico
+    const CHUNK_SIZE = 5;
+    for (let i = 0; i < orders.length; i += CHUNK_SIZE) {
+      const chunk = orders.slice(i, i + CHUNK_SIZE);
+      const chunkResults = await Promise.all(chunk.map(o => processOrder(o)));
+      for (const r of chunkResults) {
+        summary.results.push(r);
+        if (r.action === "sentToSri")    summary.sentToSri++;
+        else if (r.action === "regenerated") summary.regenerated++;
+        else if (r.action === "skipped")     summary.skipped++;
+        else if (r.action === "failed")      summary.failed++;
+      }
+      console.log(`  chunk ${Math.floor(i / CHUNK_SIZE) + 1}: processed ${chunk.length} orders`);
+    }
+
+    console.log(`✅ batch-reauthorize complete: sentToSri=${summary.sentToSri} regenerated=${summary.regenerated} skipped=${summary.skipped} failed=${summary.failed}`);
+    res.status(HttpStatusCode.Ok).send(summary);
+    return;
+  } catch (error: any) {
+    console.error("❌ Error in batchReauthorizeInvoices:", error);
+    res.status(HttpStatusCode.InternalServerError).send({ message: error.message });
+    return;
+  }
+}
+
+/**
+ * POST /api/orders/invoice/sync-authorizations
+ * Pulls authorization status from Contifico for all PROCESSED orders with autorizacion=null
+ * and updates the DB. Also triggers sendToSri for documents that are "Firmado" but not sent.
+ * Safe to run multiple times (idempotent).
+ */
+export async function syncInvoiceAuthorizations(req: AuthRequest, res: Response, next: NextFunction) {
+  const summary = { found: 0, authorized: 0, sentToSri: 0, stillPending: 0, failed: 0 };
+  const details: Array<{ orderId: string; customerName: string; action: string; autorizacion?: string }> = [];
+
+  try {
+    // All PROCESSED orders with a Contifico doc ID but no local autorizacion
+    // Include autorizacion="" because Contifico initializes the field as empty string
+    const orders = await models.orders.find({
+      invoiceStatus: "PROCESSED",
+      "invoiceInfo.id": { $exists: true, $ne: null },
+      "invoiceInfo.autorizacion": { $in: [null, undefined, ""] },
+      voidedAt: null
+    });
+
+    summary.found = orders.length;
+    console.log(`🔍 sync-authorizations: ${orders.length} PROCESSED orders without autorizacion`);
+
+    const CHUNK = 10;
+    for (let i = 0; i < orders.length; i += CHUNK) {
+      const chunk = orders.slice(i, i + CHUNK);
+      await Promise.all(chunk.map(async (order) => {
+        const orderId = String((order as any)._id);
+        const customerName: string = (order as any).customerName || orderId;
+        try {
+          // Use getDocument (full doc) — has real autorizacion field and estado code ("C","P","A")
+          // /estado/ endpoint only shows signing state, not SRI state
+          const doc = await withCorrectService(orderId, (order as any).contificoSource,
+            svc => svc.getDocument((order as any).invoiceInfo.id)
+          );
+
+          const autorizacion: string | null = doc?.autorizacion || null;
+          const estadoCode: string = doc?.estado || ""; // "C"=Creado, "P"=Pendiente SRI, "A"=Autorizado
+          const firmado: boolean = !!doc?.firmado;
+
+          if (autorizacion) {
+            // SRI authorized — save authorization number to DB
+            await models.orders.findByIdAndUpdate(orderId, {
+              "invoiceInfo.autorizacion": autorizacion,
+              invoiceError: null
+            });
+            summary.authorized++;
+            details.push({ orderId, customerName, action: "authorized", autorizacion });
+          } else if (estadoCode === "P" || estadoCode === "E") {
+            // "P" = En cola SRI / "E" = Enviado SRI — SRI is processing, just wait
+            summary.stillPending++;
+            details.push({ orderId, customerName, action: `pending:EnviadoSRI` });
+          } else if (firmado) {
+            // Firmado (estado "C") but NOT in SRI queue yet — sendToSri didn't queue it
+            // Always retry sendToSri when estado is "C" (not "P"/"E")
+            const result = await withCorrectService(orderId, (order as any).contificoSource,
+              svc => svc.sendToSri((order as any).invoiceInfo.id)
+            );
+            if ((result as any)?.error) {
+              const errMsg = typeof (result as any).error === 'object'
+                ? ((result as any).error?.mensaje || JSON.stringify((result as any).error))
+                : String((result as any).error);
+              await models.orders.findByIdAndUpdate(orderId, { invoiceStatus: "ERROR", invoiceError: errMsg });
+              summary.failed++;
+              details.push({ orderId, customerName, action: "failed" });
+            } else {
+              // Check if sendToSri actually queued it (estado should be "P" now)
+              const newEstado: string = (result as any)?.estado || "";
+              await models.orders.findByIdAndUpdate(orderId, { invoiceSentToSriAt: new Date(), invoiceError: null });
+              if (newEstado === "P" || newEstado === "E") {
+                summary.sentToSri++;
+                details.push({ orderId, customerName, action: "sentToSri" });
+              } else {
+                // Queued but SRI slow — mark pending
+                summary.stillPending++;
+                details.push({ orderId, customerName, action: "pending:queued" });
+              }
+            }
+          } else {
+            // Not signed yet — Contifico still processing
+            summary.stillPending++;
+            details.push({ orderId, customerName, action: `pending:noFirmado` });
+          }
+        } catch (err: any) {
+          console.error(`❌ sync-auth [${orderId}]:`, err?.message);
+          summary.failed++;
+          details.push({ orderId, customerName, action: "error" });
+        }
+      }));
+    }
+
+    console.log(`✅ sync-authorizations done: authorized=${summary.authorized} sentToSri=${summary.sentToSri} pending=${summary.stillPending} failed=${summary.failed}`);
+    res.status(HttpStatusCode.Ok).send({ ...summary, details });
+    return;
+  } catch (error: any) {
+    console.error("❌ Error in syncInvoiceAuthorizations:", error);
+    res.status(HttpStatusCode.InternalServerError).send({ message: error.message });
+    return;
+  }
+}
+
+/**
+ * POST /api/orders/invoice/generate-missing
+ * Generates invoices for all orders with invoiceNeeded=true that have no invoice yet
+ * (invoiceStatus = null/undefined/PENDING and no invoiceInfo).
+ * Excludes voided orders.
+ */
+export async function generateMissingInvoices(req: AuthRequest, res: Response, next: NextFunction) {
+  const summary = { found: 0, generated: 0, failed: 0 };
+  const details: Array<{ orderId: string; customerName: string; action: string; detail?: string }> = [];
+
+  try {
+    const orders = await models.orders.find({
+      invoiceNeeded: true,
+      invoiceStatus: { $in: [null, undefined, "PENDING"] },
+      "invoiceInfo": { $in: [null, undefined] },
+      voidedAt: null
+    });
+
+    summary.found = orders.length;
+    console.log(`🔍 generate-missing: ${orders.length} orders need invoice`);
+
+    const CHUNK = 3; // slower — creates new docs in Contifico
+    for (let i = 0; i < orders.length; i += CHUNK) {
+      const chunk = orders.slice(i, i + CHUNK);
+      await Promise.all(chunk.map(async (order) => {
+        const orderId = String((order as any)._id);
+        const customerName: string = (order as any).customerName || orderId;
+        try {
+          const invoiceResponse = await withCorrectService(orderId, (order as any).contificoSource,
+            svc => svc.createInvoice(order)
+          );
+          if (invoiceResponse?.error) {
+            const errMsg = typeof invoiceResponse.error === 'object'
+              ? (invoiceResponse.error?.mensaje || JSON.stringify(invoiceResponse.error))
+              : String(invoiceResponse.error);
+            (order as any).invoiceStatus = "ERROR";
+            (order as any).invoiceError = errMsg;
+            await order.save();
+            summary.failed++;
+            details.push({ orderId, customerName, action: "failed", detail: errMsg });
+            return;
+          }
+          (order as any).invoiceStatus = "PROCESSED";
+          (order as any).invoiceInfo = invoiceResponse;
+          (order as any).invoiceError = null;
+          await order.save();
+
+          const svc = getContificoService((order as any).contificoSource);
+          const sriSentAt = new Date();
+          svc.sendToSriWhenReady(invoiceResponse.id)
+            .then(async (sriResult: any) => {
+              if (sriResult?.error) {
+                const errMsg = typeof sriResult.error === 'object'
+                  ? (sriResult.error?.mensaje || sriResult.error?.detail || JSON.stringify(sriResult.error))
+                  : String(sriResult.error);
+                await models.orders.findByIdAndUpdate(orderId, { invoiceStatus: "ERROR", invoiceError: `SRI: ${errMsg}` });
+              } else {
+                await models.orders.findByIdAndUpdate(orderId, { invoiceSentToSriAt: sriSentAt, invoiceError: null });
+              }
+            })
+            .catch((err: any) => console.error(`SRI Error (generate-missing) [${orderId}]:`, err));
+
+          summary.generated++;
+          details.push({ orderId, customerName, action: "generated", detail: invoiceResponse.id });
+        } catch (err: any) {
+          console.error(`❌ generate-missing [${orderId}]:`, err?.message);
+          summary.failed++;
+          details.push({ orderId, customerName, action: "error", detail: err?.message });
+        }
+      }));
+    }
+
+    console.log(`✅ generate-missing done: generated=${summary.generated} failed=${summary.failed}`);
+    res.status(HttpStatusCode.Ok).send({ ...summary, details });
+    return;
+  } catch (error: any) {
+    console.error("❌ Error in generateMissingInvoices:", error);
     res.status(HttpStatusCode.InternalServerError).send({ message: error.message });
     return;
   }

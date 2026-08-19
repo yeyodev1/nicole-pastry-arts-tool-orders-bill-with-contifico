@@ -32,7 +32,7 @@ export class ProductionService {
    * Returns a list of all active production orders with full details.
    * Useful for the tabular list view.
    */
-  async getAllOrders(dateStr?: string) {
+  async getAllOrders(dateStr?: string, source?: 'nicole' | 'sucree') {
     let matchQuery: any;
 
     if (!dateStr || dateStr === 'today') {
@@ -58,6 +58,10 @@ export class ProductionService {
       // Specific YYYY-MM-DD date
       const { startDate, endDate } = getECDateRange(dateStr, false);
       matchQuery = { deliveryDate: { $gte: startDate, $lte: endDate } };
+    }
+
+    if (source) {
+      matchQuery.contificoSource = source;
     }
 
     const orders = await OrderModel.find(matchQuery).sort({ deliveryDate: 1 });
@@ -113,7 +117,7 @@ export class ProductionService {
     );
   }
 
-  async getAggregatedItems(bucket?: 'delayed' | 'today' | 'tomorrow' | 'future') {
+  async getAggregatedItems(bucket?: 'delayed' | 'today' | 'tomorrow' | 'future', source?: 'nicole' | 'sucree') {
     // 0. Fetch Contifico Data (Categories & Products) for mapping
     // Ideally cached, but for now we fetch fresh or assume efficient enough
     const contificoService = new (require("./contifico.service").ContificoService)();
@@ -169,6 +173,10 @@ export class ProductionService {
     const baseMatch: any = {
       productionStage: { $in: ["PENDING", "IN_PROCESS", "DELAYED"] }
     };
+
+    if (source) {
+      baseMatch.contificoSource = source;
+    }
 
     if (bucket) {
       // Apply Date Filter based on bucket

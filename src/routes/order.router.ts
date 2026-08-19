@@ -31,11 +31,20 @@ router.post("/reassign-delivery", OrderController.reassignDelivery);
 // POST /api/orders/batch-invoice (Protected by Cron)
 router.post("/batch-invoice", OrderController.processPendingInvoices);
 
+// POST /api/orders/invoice/batch-reauthorize
+router.post("/invoice/batch-reauthorize", authMiddleware as any, OrderController.batchReauthorizeInvoices);
+
+// POST /api/orders/invoice/sync-authorizations — pull autorizacion from Contifico → DB
+router.post("/invoice/sync-authorizations", authMiddleware as any, OrderController.syncInvoiceAuthorizations);
+
+// POST /api/orders/invoice/generate-missing — create invoices for orders that never got one
+router.post("/invoice/generate-missing", authMiddleware as any, OrderController.generateMissingInvoices);
+
 // PUT /api/orders/:id/invoice
 router.put("/:id/invoice", OrderController.updateInvoiceData);
 
 // POST /api/orders/:id/collection
-router.post("/:id/collection", OrderController.registerCollection);
+router.post("/:id/collection", authMiddleware as any, OrderController.registerCollection);
 
 // POST /api/orders/:id/invoice/generate
 router.post("/:id/invoice/generate", OrderController.generateInvoice);
@@ -49,11 +58,14 @@ router.get("/:id/invoice/auth-status", OrderController.getInvoiceAuthStatus);
 // POST /api/orders/:id/invoice/authorize
 router.post("/:id/invoice/authorize", OrderController.triggerInvoiceAuth);
 
+// POST /api/orders/:id/invoice/regenerate (elimina doc Contifico roto y lo recrea)
+router.post("/:id/invoice/regenerate", authMiddleware as any, OrderController.regenerateInvoice);
+
 // POST /api/orders/:id/settle-island
 router.post("/:id/settle-island", OrderController.settleOrderInIsland);
 
 // PUT /api/orders/:id/return
-router.put("/:id/return", OrderController.returnOrder);
+router.put("/:id/return", authMiddleware as any, OrderController.returnOrder);
 
 // DELETE /api/orders/:id
 router.delete("/:id", OrderController.deleteOrder);

@@ -5,59 +5,123 @@ export class ContificoService {
   private apiKey: string;
   private token: string;
   private baseUrl: string = "https://api.contifico.com/sistema/api/v1";
+  // POS (Punto de Venta) ID para la cuenta — cada empresa tiene el suyo
+  private posId: string;
+  // Identifica qué cuenta de Contífico maneja esta instancia
+  readonly source: 'nicole' | 'sucree';
 
-  constructor() {
-    this.apiKey = process.env.CONTIFICO_API_KEY || "";
-    this.token = process.env.CONTIFICO_TOKEN || "";
+  constructor(source: 'nicole' | 'sucree' = 'nicole') {
+    this.source = source;
+
+    // Seleccionar credenciales y POS según el negocio
+    if (source === 'sucree') {
+      this.apiKey = process.env.CONTIFICO_SUCREE_API_KEY || "";
+      this.token = process.env.CONTIFICO_SUCREE_TOKEN || "";
+      this.posId = process.env.CONTIFICO_SUCREE_POS_ID || "";
+    } else {
+      // Default: Nicole (negocio principal)
+      this.apiKey = process.env.CONTIFICO_API_KEY || "";
+      this.token = process.env.CONTIFICO_TOKEN || "";
+      this.posId = process.env.CONTIFICO_POS_ID || "00f60268-ca0c-48f9-8768-4f2625fa975a";
+    }
 
     if (!this.apiKey || !this.token) {
-      console.warn("⚠️ Contífico credentials missing in .env");
+      console.warn(`⚠️ Contífico credentials missing for source '${source}' in .env`);
     }
+    // posId puede estar vacío — se auto-detecta desde /caja/ en el primer uso si no está configurado.
   }
 
-  // --- CACHE DEFINITIONS ---
-  private static cachedProducts: any[] | null = null;
-  private static cachedProductsTime: number = 0;
-  private static readonly PRODUCTS_TTL = 3600 * 1000; // 1 hour
+  // --- CACHE POR INSTANCIA (evita que Nicole y Sucree compartan caché) ---
+  private cachedProducts: any[] | null = null;
+  private cachedProductsTime: number = 0;
+  private static readonly PRODUCTS_TTL = 3600 * 1000; // 1 hora
 
-  private static cachedCategories: any[] | null = null;
-  private static cachedCategoriesTime: number = 0;
-  private static readonly CATEGORIES_TTL = 3600 * 1000; // 1 hour
+  private cachedCategories: any[] | null = null;
+  private cachedCategoriesTime: number = 0;
+  private static readonly CATEGORIES_TTL = 3600 * 1000; // 1 hora
+
+  // POS ID auto-detectado desde la API de Contífico (una vez por instancia)
+  private resolvedPosId: string = "";
+  private posIdResolved: boolean = false;
 
   /**
-   * Get cached products or fetch fresh if expired.
-   * Useful for heavy dashboards.
+   * Retorna productos cacheados o frescos si el TTL expiró.
    */
   async getCachedProducts(result_size: number = 2000) {
     const now = Date.now();
-    if (ContificoService.cachedProducts && (now - ContificoService.cachedProductsTime < ContificoService.PRODUCTS_TTL)) {
-      return ContificoService.cachedProducts;
+    if (this.cachedProducts && (now - this.cachedProductsTime < ContificoService.PRODUCTS_TTL)) {
+      return this.cachedProducts;
     }
 
-    // Fetch fresh
     const products = await this.getProducts({ result_size });
     if (products) {
-      ContificoService.cachedProducts = products;
-      ContificoService.cachedProductsTime = now;
+      this.cachedProducts = products;
+      this.cachedProductsTime = now;
     }
     return products || [];
   }
 
   /**
-   * Get cached categories or fetch fresh if expired.
+   * Retorna categorías cacheadas o frescas si el TTL expiró.
    */
   async getCachedCategories() {
     const now = Date.now();
-    if (ContificoService.cachedCategories && (now - ContificoService.cachedCategoriesTime < ContificoService.CATEGORIES_TTL)) {
-      return ContificoService.cachedCategories;
+    if (this.cachedCategories && (now - this.cachedCategoriesTime < ContificoService.CATEGORIES_TTL)) {
+      return this.cachedCategories;
     }
 
     const categories = await this.getCategories();
     if (categories) {
-      ContificoService.cachedCategories = categories;
-      ContificoService.cachedCategoriesTime = now;
+      this.cachedCategories = categories;
+      this.cachedCategoriesTime = now;
     }
     return categories || [];
+  }
+
+  /**
+   * Busca una persona en Contifico por cédula/RUC.
+   * Devuelve el primer resultado o null si no existe.
+   */
+  async findPersona(identificacion: string): Promise<any | null> {
+    try {
+      const response = await axios.get(`${this.baseUrl}/persona/`, {
+        headers: { Authorization: this.apiKey },
+        params: { identificacion },
+      });
+      const results = response.data;
+      if (Array.isArray(results) && results.length > 0) return results[0];
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Si la persona existe en Contifico con tipo "C" (inválido para SRI),
+   * intenta actualizar el tipo al valor correcto via PUT.
+   * Retorna true si la persona quedó con el tipo correcto, false si falló.
+   */
+  async ensurePersonaTipo(rawId: string, correctTipo: string): Promise<boolean> {
+    try {
+      const persona = await this.findPersona(rawId);
+      if (!persona) return true; // No existe aún — se creará nueva con tipo correcto
+      if (persona.tipo !== 'C') return true; // Ya tiene tipo válido
+
+      // Intentar corregir el tipo via PUT
+      console.log(`🔧 [${this.source}] Persona ${rawId} tiene tipo "C" — intentando corregir a "${correctTipo}"...`);
+      await axios.put(`${this.baseUrl}/persona/`, {
+        ...persona,
+        tipo: correctTipo,
+      }, {
+        headers: { Authorization: this.apiKey, 'Content-Type': 'application/json' },
+        params: { pos: this.token },
+      });
+      console.log(`✅ [${this.source}] Persona ${rawId} actualizada a tipo "${correctTipo}"`);
+      return true;
+    } catch (err: any) {
+      console.warn(`⚠️ [${this.source}] No se pudo actualizar tipo de persona ${rawId}: ${err?.response?.data?.mensaje || err.message}`);
+      return false; // El caller fallback a CF
+    }
   }
 
   /**
@@ -158,26 +222,65 @@ export class ContificoService {
       const randomSeq = Math.floor(Math.random() * 900000) + 100000;
       const docNumber = `001-001-000${randomSeq}`;
 
-      // FIX: Use "Caja Dulcería" POS ID instead of generic API token
-      // This ensures the invoice belongs to the physical box where we want to register collections.
-      // POS: Caja Dulcería (00f60268-ca0c-48f9-8768-4f2625fa975a)
-      const POS_DULCERIA_ID = "00f60268-ca0c-48f9-8768-4f2625fa975a";
+      // POS ID de la cuenta Contífico correspondiente.
+      // Se obtiene de env var o se auto-detecta desde /caja/ (una vez, cacheado por instancia).
+      const POS_DULCERIA_ID = await this.resolvePosId();
 
-      // Standardize ID: Trim spaces
-      const rawId = (orderData.invoiceData.ruc || "").trim();
-      const isCedula = rawId.length === 10;
+      // Identificación del cliente para la factura.
+      // REGLA SRI: tipoIdentificacionComprador se determina SOLO por el largo del ID:
+      //   13 dígitos → RUC (04): enviar solo `ruc`, `cedula = ""`
+      //   10 dígitos → Cédula (05): enviar `cedula` y `ruc = cedula + "001"`
+      // NO mezclar cedula + ruc — si se envían ambos Contifico genera
+      // tipoIdentificacionComprador="None" y el SRI rechaza: "ARCHIVO NO CUMPLE ESTRUCTURA XML".
+      const rawId = (orderData.invoiceData?.ruc || "").replace(/\s+/g, "");
 
-      // In Ecuador, a natural person's RUC is their 10-digit cedula + "001".
-      // Contifico requires a 13-digit ruc field on invoices even for natural persons.
-      const computedRuc = isCedula ? rawId + "001" : rawId;
+      let computedRuc: string;
+      let computedCedula: string;
+
+      // tipo según doc oficial Contifico: N=Natural, J=Juridica, I=SinId, P=Placa
+      // "C" NO es un valor válido — causa XML inválido en el SRI.
+      let computedTipo: string;
+      if (rawId.length === 13) {
+        // RUC empresa (no termina en 001) → Juridica; persona natural con RUC (termina en 001) → Natural
+        computedTipo = rawId.endsWith("001") ? "N" : "J";
+        computedRuc = rawId;
+        computedCedula = rawId.endsWith("001") ? rawId.slice(0, 10) : "";
+      } else {
+        // Cédula (10 dígitos) → persona Natural
+        computedTipo = "N";
+        computedRuc = rawId + "001";
+        computedCedula = rawId;
+      }
+
+      // BLINDAJE SRI: si la persona ya existe en Contifico con tipo "C",
+      // intentar corregirla antes de crear la factura.
+      // Si no se puede corregir, usar datos de Consumidor Final como fallback.
+      const personaOk = await this.ensurePersonaTipo(rawId, computedTipo);
+      let invoiceRuc = computedRuc;
+      let invoiceCedula = computedCedula;
+      let invoiceTipo = computedTipo;
+      let invoiceRazonSocial = orderData.invoiceData?.businessName;
+      let invoiceEmail = orderData.invoiceData?.email;
+      let invoiceDireccion = orderData.invoiceData?.address;
+
+      if (!personaOk) {
+        // Fallback: Consumidor Final (persona_id: NO8bYRVq3HX9xd7j, tipo N, siempre autoriza)
+        console.warn(`⚠️ [${this.source}] Usando Consumidor Final como fallback para ${rawId}`);
+        invoiceRuc = "9999999999999";
+        invoiceCedula = "9999999999";
+        invoiceTipo = "N";
+        invoiceRazonSocial = "consumidor final";
+        invoiceEmail = "noname@noname.com";
+        invoiceDireccion = "sin dirección";
+      }
 
       const clientePayload = {
-        razon_social: orderData.invoiceData.businessName,
-        ruc: computedRuc,
-        cedula: isCedula ? rawId : "",
-        email: orderData.invoiceData.email,
-        direccion: orderData.invoiceData.address,
-        tipo: "C",
+        razon_social: invoiceRazonSocial,
+        ruc: invoiceRuc,
+        cedula: invoiceCedula,
+        email: invoiceEmail,
+        direccion: invoiceDireccion,
+        tipo: invoiceTipo,
         telefonos: orderData.customerPhone
       };
 
@@ -196,8 +299,11 @@ export class ContificoService {
           descuento: undefined
         })),
         subtotal_0: Number(subtotal_0.toFixed(2)),
-        subtotal_12: 0,
-        subtotal_15: Number(subtotal_15.toFixed(2)),
+        // Contifico usa `subtotal_12` como campo de base gravable para IVA (sin importar si la tasa es 12% o 15%).
+        // La tasa real se determina por `porcentaje_iva` en cada detalle.
+        // `subtotal_15` es ignorado por la API → enviarlo como 0 evita confusión.
+        subtotal_12: Number(subtotal_15.toFixed(2)),
+        subtotal_15: 0,
         iva: Number(total_iva.toFixed(2)),
         ice: 0,
         total: Number(total_final.toFixed(2)),
@@ -373,10 +479,10 @@ export class ContificoService {
         const cajas = await this.getCajas();
 
         if (cajas && cajas.length > 0) {
-          // PREFERENCE: "Caja Dulcería" (POS ID: 00f60268-ca0c-48f9-8768-4f2625fa975a)
-          const PREFERRED_POS_ID = "00f60268-ca0c-48f9-8768-4f2625fa975a";
+          // Usar el POS de esta cuenta (auto-detectado o configurado por env var)
+          const PREFERRED_POS_ID = await this.resolvePosId();
 
-          // Strategy: Find ALL sessions for the preferred POS and pick the LATEST one.
+          // Strategy: Find ALL sessions for our POS and pick the LATEST one.
           // We ignore 'fecha_cierre' because sometimes active sessions have it populated.
           const posSessions = cajas.filter((c: any) => c.pos === PREFERRED_POS_ID);
 
@@ -493,6 +599,50 @@ export class ContificoService {
   }
 
   /**
+   * Resuelve el POS ID para esta cuenta Contífico.
+   * Prioridad: env var → auto-detección por frecuencia en /caja/ → primer caja disponible.
+   * El resultado queda cacheado por instancia (una sola llamada a la API por ciclo de vida).
+   */
+  async resolvePosId(): Promise<string> {
+    if (this.posIdResolved) return this.resolvedPosId;
+
+    // Si viene configurado por env var, usarlo directamente
+    if (this.posId) {
+      this.resolvedPosId = this.posId;
+      this.posIdResolved = true;
+      return this.resolvedPosId;
+    }
+
+    // Auto-detectar desde la API
+    try {
+      const cajas = await this.getCajas();
+      if (cajas && cajas.length > 0) {
+        // Contar qué POS aparece más veces en las sesiones de caja → el más activo
+        const freq: Record<string, number> = {};
+        for (const c of cajas) {
+          if (c.pos) freq[c.pos] = (freq[c.pos] || 0) + 1;
+        }
+        const sorted = Object.entries(freq).sort((a, b) => b[1] - a[1]);
+        if (sorted.length > 0) {
+          this.resolvedPosId = sorted[0][0];
+          console.log(`✅ [${this.source}] POS auto-detectado: ${this.resolvedPosId}`);
+        } else {
+          // Sin campo pos, usar el id de la primera caja directamente
+          this.resolvedPosId = cajas[0].id || "";
+          console.warn(`⚠️ [${this.source}] Cajas sin campo 'pos', usando primera caja: ${this.resolvedPosId}`);
+        }
+      } else {
+        console.warn(`⚠️ [${this.source}] No se encontraron cajas en Contífico.`);
+      }
+    } catch (err) {
+      console.error(`❌ [${this.source}] Error al auto-detectar POS ID:`, err);
+    }
+
+    this.posIdResolved = true;
+    return this.resolvedPosId;
+  }
+
+  /**
    * Get Cajas (Cash Registers)
    */
   async getCajas() {
@@ -521,6 +671,144 @@ export class ContificoService {
       console.warn("⚠️ Error fetching Bank Accounts (trying /banco/cuenta/):", error.response?.data || error.message);
       return [];
     }
+  }
+
+  /**
+   * Repara una factura rota vía PUT (subtotal_12 = 0 con iva > 0).
+   * La API de Contífico no soporta DELETE en documentos — en cambio usamos PUT
+   * para corregir los campos y re-firmar. Contífico re-genera la firma automáticamente.
+   * @param documentId ID del documento en Contífico
+   * @param orderData Datos del pedido (mismos que se usan en createInvoice)
+   */
+  async repairDocument(documentId: string, orderData: any) {
+    try {
+      // Recalcular totales correctos (igual que createInvoice)
+      let subtotal_0 = 0;
+      let subtotal_12_val = 0;
+
+      const detalles = orderData.products.map((p: any) => {
+        const cantidad = Number(p.quantity);
+        const precio = Number(p.price);
+        const isDelivery = p.name.toLowerCase().includes('delivery');
+        const porcentaje_iva = 15; // Siempre 15% (Ecuador 2024+)
+
+        let calcPrice = precio;
+        if (isDelivery) calcPrice = precio / 1.15;
+
+        let discountPercentage = p.isCourtesy ? 100 : 0;
+        if (orderData.isGlobalCourtesy) {
+          discountPercentage = 100;
+        } else if (orderData.globalDiscountPercentage > 0 && discountPercentage < 100) {
+          discountPercentage = orderData.globalDiscountPercentage;
+        }
+
+        const totalLine = cantidad * calcPrice * ((100 - discountPercentage) / 100);
+        const base_gravable = Number(totalLine.toFixed(2));
+        subtotal_12_val += base_gravable;
+
+        return {
+          producto_id: p.contifico_id || "9pgenB6GQcVWoeNQ",
+          cantidad,
+          precio: Number(calcPrice.toFixed(4)),
+          descripcion: p.name,
+          porcentaje_iva,
+          base_cero: 0,
+          base_gravable,
+          base_no_gravable: 0,
+          porcentaje_descuento: discountPercentage,
+        };
+      });
+
+      const iva = Number((subtotal_12_val * 0.15).toFixed(2));
+      const total = Number((subtotal_0 + subtotal_12_val + iva).toFixed(2));
+
+      const POS_ID = await this.resolvePosId();
+      const rawId = (orderData.invoiceData?.ruc || "").replace(/\s+/g, "");
+
+      // Mismo criterio que createInvoice: tipo según doc oficial (N/J), nunca "C"
+      let ruc: string, cedula: string, tipo: string;
+      if (rawId.length === 13) {
+        ruc = rawId;
+        cedula = rawId.endsWith("001") ? rawId.slice(0, 10) : "";
+        tipo = rawId.endsWith("001") ? "N" : "J";
+      } else {
+        ruc = rawId + "001"; cedula = rawId; tipo = "N";
+      }
+
+      const payload = {
+        id: documentId,
+        pos: POS_ID,
+        fecha_emision: new Date().toLocaleDateString("en-GB"),
+        tipo_documento: "FAC",
+        // Preservar el número de secuencia original del documento para que Contifico
+        // no genere uno nuevo. Sin esto, el PUT puede asignar un numero diferente
+        // lo que rompe la trazabilidad con el SRI.
+        documento: orderData.invoiceInfo?.documento,
+        estado: "P",
+        electronico: true,
+        autorizacion: "",
+        cliente: {
+          razon_social: orderData.invoiceData?.businessName,
+          ruc,
+          cedula,
+          email: orderData.invoiceData?.email,
+          direccion: orderData.invoiceData?.address,
+          tipo,
+          telefonos: orderData.customerPhone,
+        },
+        detalles,
+        subtotal_0: Number(subtotal_0.toFixed(2)),
+        subtotal_12: Number(subtotal_12_val.toFixed(2)),
+        subtotal_15: 0,
+        iva,
+        ice: 0,
+        total,
+        servicio: 0,
+        propina: 0,
+        metodo_pago: "TRA",
+      };
+
+      const response = await axios.put(`${this.baseUrl}/documento/`, payload, {
+        headers: { Authorization: this.apiKey, "Content-Type": "application/json" },
+      });
+
+      return response.data;
+    } catch (error: any) {
+      console.error("❌ Error repairing document in Contífico:", error.response?.data || error.message);
+      throw new Error(error.response?.data?.mensaje || "Failed to repair document in Contífico");
+    }
+  }
+
+  /**
+   * Espera a que Contifico firme el documento y luego lo envía al SRI.
+   * Contifico firma en background unos segundos después de crear el documento.
+   * Si llamamos sendToSri antes de que esté firmado, el request se ignora silenciosamente.
+   * @param documentId Document ID
+   * @param maxWaitMs Tiempo máximo de espera en ms (default 30s)
+   */
+  async sendToSriWhenReady(documentId: string, maxWaitMs = 600000): Promise<any> {
+    const pollInterval = 15000; // verificar cada 15 segundos (Contifico firma en 2-10 min)
+    const start = Date.now();
+
+    while (Date.now() - start < maxWaitMs) {
+      try {
+        const estado = await this.getDocumentEstado(documentId);
+        // NOTA: la API devuelve "No se ha firmado" (no "No Firmado") para documentos sin firma.
+        // Solo llamar sendToSri cuando el estado sea exactamente "Firmado".
+        if (estado?.estado === 'Firmado') {
+          // Documento firmado — ahora sí enviar al SRI
+          console.log(`✅ [${this.source}] Doc ${documentId} firmado, enviando al SRI...`);
+          return await this.sendToSri(documentId);
+        }
+        console.log(`⏳ [${this.source}] Doc ${documentId} estado="${estado?.estado}" — reintentando en ${pollInterval/1000}s...`);
+      } catch {
+        // Si getDocumentEstado falla, esperamos y reintentamos
+      }
+      await new Promise(resolve => setTimeout(resolve, pollInterval));
+    }
+
+    console.warn(`⚠️ [${this.source}] Doc ${documentId} no se firmó en ${maxWaitMs/1000}s — enviando al SRI de todas formas (Contifico puede haberlo firmado internamente sin actualizar el flag).`);
+    return await this.sendToSri(documentId);
   }
 
   /**

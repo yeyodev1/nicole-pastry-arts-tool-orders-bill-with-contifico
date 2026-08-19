@@ -22,7 +22,8 @@ export async function getProductionTasks(req: Request, res: Response) {
 export async function getAllProductionOrders(req: Request, res: Response) {
   try {
     const date = req.query.date as string | undefined;
-    const orders = await productionService.getAllOrders(date);
+    const source = req.query.source as 'nicole' | 'sucree' | undefined;
+    const orders = await productionService.getAllOrders(date, source);
     res.status(HttpStatusCode.Ok).send({
       message: "All production orders retrieved successfully.",
       count: orders.length,
@@ -68,7 +69,8 @@ export async function batchUpdateProductionTasks(req: Request, res: Response) {
 export async function getItemsSummary(req: Request, res: Response) {
   try {
     const bucket = req.query.bucket as 'delayed' | 'today' | 'tomorrow' | 'future' | undefined;
-    const dashboard = await productionService.getAggregatedItems(bucket);
+    const source = req.query.source as 'nicole' | 'sucree' | undefined;
+    const dashboard = await productionService.getAggregatedItems(bucket, source);
     res.status(HttpStatusCode.Ok).send({ message: "Dashboard retrieved", dashboard });
   } catch (error: any) {
     res.status(HttpStatusCode.InternalServerError).send({ message: "Failed", error: error.message });

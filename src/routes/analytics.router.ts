@@ -13,4 +13,7 @@ router.post("/sync", AnalyticsController.syncAnalytics);
 // GET /api/analytics/sales-by-responsible
 router.get("/sales-by-responsible", authMiddleware as any, AnalyticsController.getSalesByResponsible);
 
+// GET /api/analytics/superadmin/main
+router.get("/superadmin/main", authMiddleware as any, AnalyticsController.getSuperAdminAnalytics);
+
 export default router;

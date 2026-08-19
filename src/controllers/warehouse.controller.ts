@@ -13,8 +13,9 @@ async function createMovement(req: IAuthRequest, res: Response, next: NextFuncti
   try {
     const {
       type, rawMaterial, quantity, provider, entity, observation,
-      unitCost, totalValue, responsible, receptionPoint,
+      responsible, receptionPoint,
     } = req.body;
+    let { unitCost, totalValue } = req.body;
     const userId = req.user?.id || req.body.user;
 
     if (!userId) {
@@ -32,6 +33,12 @@ async function createMovement(req: IAuthRequest, res: Response, next: NextFuncti
     const material = await RawMaterialModel.findById(rawMaterial);
     if (!material) {
       return res.status(404).send({ message: "Raw Material not found." });
+    }
+
+    // Auto-calculate values for OUT/LOSS if not provided
+    if ((type === "OUT" || type === "LOSS") && unitCost === undefined) {
+      unitCost = material.cost;
+      totalValue = quantity * material.cost;
     }
 
     if (type === "OUT" || type === "LOSS") {
@@ -78,6 +85,7 @@ async function createMovement(req: IAuthRequest, res: Response, next: NextFuncti
       responsible,
       observation,
       date: req.body.date ? new Date(req.body.date) : new Date(),
+      expiryDate: type === "IN" && req.body.expiryDate ? new Date(req.body.expiryDate) : undefined,
     });
 
     await Promise.all([movement.save(), material.save()]);
@@ -218,7 +226,7 @@ async function createBatch(req: IAuthRequest, res: Response, next: NextFunction)
     const materialUpdates: any[] = [];
 
     for (const item of items) {
-      const { rawMaterial: rawMaterialId, quantity, unitCost, totalValue, receptionPoint: itemReceptionPoint } = item;
+      const { rawMaterial: rawMaterialId, quantity, unitCost, totalValue, receptionPoint: itemReceptionPoint, provider: itemProvider } = item;
       if (!rawMaterialId || !quantity || quantity <= 0) continue;
 
       const material = await RawMaterialModel.findById(rawMaterialId);
@@ -227,6 +235,14 @@ async function createBatch(req: IAuthRequest, res: Response, next: NextFunction)
       }
 
       const effectiveReceptionPoint = itemReceptionPoint || receptionPoint;
+      const effectiveProvider = itemProvider || provider;
+      let effectiveUnitCost = unitCost;
+      let effectiveTotalValue = totalValue;
+
+      if ((type === "OUT" || type === "LOSS") && effectiveUnitCost === undefined) {
+        effectiveUnitCost = material.cost;
+        effectiveTotalValue = quantity * material.cost;
+      }
 
       if (type === "OUT" || type === "LOSS") {
         if (effectiveReceptionPoint) {
@@ -260,9 +276,9 @@ async function createBatch(req: IAuthRequest, res: Response, next: NextFunction)
         type,
         rawMaterial: rawMaterialId,
         quantity,
-        unitCost:       unitCost   !== undefined ? Number(unitCost)   : undefined,
-        totalValue:     totalValue !== undefined ? Number(totalValue) : undefined,
-        provider:       type === "IN"  ? provider       : undefined,
+        unitCost:       effectiveUnitCost   !== undefined ? Number(effectiveUnitCost)   : undefined,
+        totalValue:     effectiveTotalValue !== undefined ? Number(effectiveTotalValue) : undefined,
+        provider:       type === "IN"  ? effectiveProvider : undefined,
         entity:         type === "OUT" ? entity         : undefined,
         receptionPoint: effectiveReceptionPoint || undefined,
         user: userId,
@@ -273,6 +289,7 @@ async function createBatch(req: IAuthRequest, res: Response, next: NextFunction)
         invoiceDueDate: type === "IN" ? invoiceDueDate : undefined,
         isPaid: false,
         batchId,
+        expiryDate: type === "IN" && item.expiryDate ? new Date(item.expiryDate) : undefined,
       });
 
       movementDocs.push(movement);

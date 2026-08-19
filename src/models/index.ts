@@ -13,6 +13,9 @@ import { GoalSettingsModel } from "./goal-settings.model";
 import { ProductionSettingsModel } from "./production-settings.model";
 import { ProviderCategoryModel } from "./provider-category.model";
 import { WarehouseSettingsModel } from "./warehouse-settings.model";
+import { Branch } from "./branch.model";
+import { InternalRequisitionModel } from "./internal-requisition.model";
+import { WarehouseLoanModel } from "./warehouse-loan.model";
 
 export const models = {
   orders: OrderModel,
@@ -30,4 +33,7 @@ export const models = {
   productionSettings: ProductionSettingsModel,
   providerCategories: ProviderCategoryModel,
   warehouseSettings: WarehouseSettingsModel,
+  branches: Branch,
+  internalRequisitions: InternalRequisitionModel,
+  warehouseLoans: WarehouseLoanModel,
 };

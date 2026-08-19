@@ -118,6 +118,82 @@ async function updateOrder(req: Request, res: Response, next: NextFunction) {
   }
 }
 
+// --- Arriving Today (aviso "esto llega hoy") ---
+async function getArrivingToday(req: Request, res: Response, next: NextFunction) {
+  try {
+    // Rango del día actual en hora Ecuador (UTC-5)
+    const now = new Date(Date.now() - 5 * 60 * 60 * 1000);
+    const y = now.getUTCFullYear();
+    const m = now.getUTCMonth();
+    const d = now.getUTCDate();
+    const start = new Date(Date.UTC(y, m, d, 5, 0, 0)); // 00:00 EC
+    const end = new Date(Date.UTC(y, m, d + 1, 4, 59, 59, 999)); // 23:59 EC
+
+    const orders = await SupplierOrderModel.find({
+      deliveryDate: { $gte: start, $lte: end },
+      status: { $in: ["PENDING", "SENT"] },
+    })
+      .sort({ deliveryDate: 1 })
+      .populate("provider", "name phone")
+      .populate("user", "name");
+
+    return res.status(200).send({ count: orders.length, orders });
+  } catch (error) {
+    console.error("Error fetching arriving-today supplier orders:", error);
+    next(error);
+  }
+}
+
+// --- Receive Order (recepción con checklist y evidencia) ---
+async function receiveOrder(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { id } = req.params;
+    const { receivedBy, receptionNotes, invoicePhotoUrl, invoiceRef, items } = req.body;
+
+    const order = await SupplierOrderModel.findById(id);
+    if (!order) {
+      return res.status(404).send({ message: "Supplier order not found." });
+    }
+
+    order.receivedAt = new Date();
+    order.receivedBy = receivedBy || "Bodega";
+    if (receptionNotes !== undefined) order.receptionNotes = receptionNotes;
+    if (invoicePhotoUrl !== undefined) order.invoicePhotoUrl = invoicePhotoUrl;
+    if (invoiceRef !== undefined) order.invoiceRef = invoiceRef;
+
+    let hasIssues = false;
+    if (Array.isArray(items)) {
+      items.forEach((received: any) => {
+        const item = order.items.find(
+          (i: any) => i._id?.toString() === received.itemId || i.material?.toString() === received.material
+        );
+        if (!item) return;
+        if (received.quantityReceived !== undefined) {
+          item.quantityReceived = Number(received.quantityReceived);
+        }
+        item.itemStatus = received.itemStatus || (item.quantityReceived !== undefined && item.quantityReceived < item.quantity ? "MISSING" : "OK");
+        if (received.itemNote) item.itemNote = received.itemNote;
+        if (item.itemStatus !== "OK") hasIssues = true;
+      });
+    }
+
+    order.receptionStatus = hasIssues ? "PROBLEM" : "RECEIVED";
+    order.status = "RECEIVED";
+
+    await order.save();
+
+    return res.status(200).send({
+      message: hasIssues
+        ? "Recepción registrada con novedades."
+        : "Recepción registrada correctamente.",
+      order,
+    });
+  } catch (error) {
+    console.error("Error receiving supplier order:", error);
+    next(error);
+  }
+}
+
 // --- Delete Order ---
 async function deleteOrder(req: Request, res: Response, next: NextFunction) {
   try {
@@ -137,4 +213,4 @@ async function deleteOrder(req: Request, res: Response, next: NextFunction) {
   }
 }
 
-export { createOrder, getOrders, getOrderById, updateOrder, deleteOrder };
+export { createOrder, getOrders, getOrderById, updateOrder, deleteOrder, getArrivingToday, receiveOrder };
