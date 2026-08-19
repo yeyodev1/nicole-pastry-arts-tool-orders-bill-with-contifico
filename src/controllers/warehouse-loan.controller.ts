@@ -4,6 +4,7 @@ import { WarehouseLoanModel } from "../models/warehouse-loan.model";
 import { RawMaterialModel } from "../models/raw-material.model";
 import { WarehouseMovementModel } from "../models/warehouse-movement.model";
 import { AuthRequest } from "../types/AuthRequest";
+import { syncMovementToContifico } from "../services/contifico-sync.service";
 
 // Crea el par de movimientos OUT(origen) + IN(destino) para un traspaso.
 // El stock global no cambia (neto cero); el stock por ubicación sí.
@@ -31,13 +32,34 @@ async function createTransferMovements(params: {
     batchId: params.batchId,
   };
 
-  await WarehouseMovementModel.insertMany([
+  const [outMov, inMov] = await WarehouseMovementModel.insertMany([
     { ...base, type: "OUT", receptionPoint: params.fromPoint, entity: params.toPoint },
     { ...base, type: "IN", receptionPoint: params.toPoint, provider: undefined },
   ]);
 
   material.lastMovementDate = new Date();
   await material.save();
+
+  // Reflejar el traspaso en Contífico: EGR en bodega origen + ING en bodega destino
+  await Promise.all([
+    syncMovementToContifico({
+      movementId: outMov._id,
+      material,
+      type: "OUT",
+      quantity: params.quantity,
+      bodegaName: params.fromPoint,
+      description: `App Nicole — ${params.observation}`,
+    }),
+    syncMovementToContifico({
+      movementId: inMov._id,
+      material,
+      type: "IN",
+      quantity: params.quantity,
+      bodegaName: params.toPoint,
+      description: `App Nicole — ${params.observation}`,
+    }),
+  ]);
+
   return material;
 }
 

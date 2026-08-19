@@ -3,6 +3,7 @@ import { WarehouseMovementModel } from "../models/warehouse-movement.model";
 import { RawMaterialModel } from "../models/raw-material.model";
 import { Types } from "mongoose";
 import { randomUUID } from "crypto";
+import { syncMovementToContifico } from "../services/contifico-sync.service";
 
 interface IAuthRequest extends Request {
   user?: any;
@@ -89,6 +90,16 @@ async function createMovement(req: IAuthRequest, res: Response, next: NextFuncti
     });
 
     await Promise.all([movement.save(), material.save()]);
+
+    // Reflejar en Contífico (movimiento-inventario) si el material está vinculado
+    await syncMovementToContifico({
+      movementId: movement._id,
+      material,
+      type,
+      quantity,
+      bodegaName: receptionPoint,
+      description: `App Nicole — ${type === "IN" ? "Ingreso" : type === "LOSS" ? "Baja" : "Egreso"} ${material.name}${observation ? ` · ${observation}` : ""}`,
+    });
 
     return res.status(201).send({
       message: "Movement created successfully.",
@@ -300,6 +311,20 @@ async function createBatch(req: IAuthRequest, res: Response, next: NextFunction)
       ...movementDocs.map(m => m.save()),
       ...materialUpdates.map(m => m.save()),
     ]);
+
+    // Reflejar cada línea en Contífico (solo materiales vinculados)
+    await Promise.all(
+      movementDocs.map((m, i) =>
+        syncMovementToContifico({
+          movementId: m._id,
+          material: materialUpdates[i],
+          type,
+          quantity: m.quantity,
+          bodegaName: m.receptionPoint,
+          description: `App Nicole — ${type === "IN" ? "Ingreso" : "Egreso"} ${materialUpdates[i].name}${invoiceRef ? ` · Fac ${invoiceRef}` : ""}`,
+        })
+      )
+    );
 
     return res.status(201).send({
       batchId,

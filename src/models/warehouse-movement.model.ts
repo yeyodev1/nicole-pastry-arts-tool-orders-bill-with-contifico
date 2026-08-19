@@ -18,6 +18,10 @@ export interface IWarehouseMovement extends Document {
   isPaid?: boolean;
   batchId?: string;
   expiryDate?: Date; // For IN — fecha de caducidad del lote recibido
+  // Sincronización con Contífico (movimiento-inventario)
+  contificoMovementId?: string;
+  contificoSyncStatus?: "SYNCED" | "ERROR" | "SKIPPED";
+  contificoSyncError?: string;
 }
 
 const WarehouseMovementSchema = new Schema<IWarehouseMovement>(
@@ -83,6 +87,9 @@ const WarehouseMovementSchema = new Schema<IWarehouseMovement>(
     isPaid:         { type: Boolean, default: false },
     batchId:        { type: String, trim: true, index: true },
     expiryDate:     { type: Date, index: true },
+    contificoMovementId: { type: String, trim: true },
+    contificoSyncStatus: { type: String, enum: ["SYNCED", "ERROR", "SKIPPED"] },
+    contificoSyncError:  { type: String, trim: true },
   },
   {
     timestamps: true,
