@@ -4,6 +4,7 @@ import { InternalRequisitionModel } from "../models/internal-requisition.model";
 import { RawMaterialModel } from "../models/raw-material.model";
 import { WarehouseMovementModel } from "../models/warehouse-movement.model";
 import { AuthRequest } from "../types/AuthRequest";
+import { syncMovementToContifico } from "../services/contifico-sync.service";
 
 // --- Crear requerimiento (cocina/producción/isla pide a bodega) ---
 export async function createRequisition(req: AuthRequest, res: Response, next: NextFunction) {
@@ -163,7 +164,24 @@ export async function dispatchRequisition(req: AuthRequest, res: Response, next:
     }
 
     if (movements.length) {
-      await WarehouseMovementModel.insertMany(movements);
+      const inserted = await WarehouseMovementModel.insertMany(movements);
+      // Reflejar los egresos en Contífico (solo materiales vinculados)
+      const materialsById = new Map<string, any>();
+      for (const item of requisition.items) {
+        const mat = await RawMaterialModel.findById(item.material).lean();
+        if (mat) materialsById.set(String(mat._id), mat);
+      }
+      await Promise.all(
+        inserted.map((m: any) =>
+          syncMovementToContifico({
+            movementId: m._id,
+            material: materialsById.get(String(m.rawMaterial)) || {},
+            type: "OUT",
+            quantity: m.quantity,
+            description: `App Nicole — Requerimiento ${requisition.area}${requisition.brand ? ` (${requisition.brand})` : ""}`,
+          })
+        )
+      );
     }
 
     requisition.status = "DISPATCHED";
