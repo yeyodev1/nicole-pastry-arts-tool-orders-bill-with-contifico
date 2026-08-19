@@ -1,10 +1,12 @@
 import express from "express";
-import { createUser, getAllUsers, login, updateUser, deleteUser } from "../controllers/user.controller";
+import { createUser, getAllUsers, login, updateUser, deleteUser, forgotPassword, resetPassword } from "../controllers/user.controller";
 import { authMiddleware } from "../middlewares/auth.middleware";
 
 const router = express.Router();
 
 router.post("/login", login);
+router.post("/forgot-password", forgotPassword);
+router.post("/reset-password", resetPassword);
 
 // Protected routes
 router.use(authMiddleware);

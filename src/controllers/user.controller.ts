@@ -4,6 +4,58 @@ import { AuthRequest } from "../types/AuthRequest";
 
 const userService = new UserService();
 
+export async function forgotPassword(
+  req: Request,
+  res: Response,
+  next: NextFunction
+) {
+  try {
+    const { email } = req.body;
+    if (!email || typeof email !== "string") {
+      res.status(400).send({ message: "EMAIL_REQUIRED" });
+      return;
+    }
+
+    await userService.requestPasswordReset(email);
+
+    // Siempre 200: no revelar si el email existe o no
+    res.status(200).send({
+      message: "Si el correo está registrado, recibirás un enlace para restablecer tu contraseña.",
+    });
+    return;
+  } catch (error) {
+    console.error("Error in forgotPassword:", error);
+    // Igual respondemos 200 para no filtrar información; el error queda en logs
+    res.status(200).send({
+      message: "Si el correo está registrado, recibirás un enlace para restablecer tu contraseña.",
+    });
+    return;
+  }
+}
+
+export async function resetPassword(
+  req: Request,
+  res: Response,
+  next: NextFunction
+) {
+  try {
+    const { token, password } = req.body;
+    await userService.resetPassword(token, password);
+    res.status(200).send({ message: "Contraseña actualizada correctamente." });
+    return;
+  } catch (error) {
+    if (error instanceof Error && error.message === "INVALID_RESET_REQUEST") {
+      res.status(400).send({ message: "La contraseña debe tener al menos 8 caracteres." });
+      return;
+    }
+    if (error instanceof Error && error.message === "INVALID_OR_EXPIRED_TOKEN") {
+      res.status(400).send({ message: "El enlace no es válido o ya expiró. Solicita uno nuevo." });
+      return;
+    }
+    next(error);
+  }
+}
+
 export async function createUser(
   req: AuthRequest,
   res: Response,
