@@ -16,6 +16,7 @@ export interface IProvider extends Document {
   ruc?: string;
   creditDays: number;
   contificoPersonaId?: string;
+  fromContifico?: boolean; // true = proveedor importado/vinculado desde Contífico
   commercialAgents: ICommercialAgent[];
 }
 
@@ -64,6 +65,11 @@ const ProviderSchema = new Schema<IProvider>(
     contificoPersonaId: {
       type: String,
       trim: true,
+    },
+    fromContifico: {
+      type: Boolean,
+      default: false,
+      index: true,
     },
     commercialAgents: [CommercialAgentSchema],
   },

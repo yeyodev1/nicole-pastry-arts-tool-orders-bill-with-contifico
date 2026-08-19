@@ -34,6 +34,7 @@ export interface IRawMaterial extends Document {
   // Vínculo con Contífico
   contificoId?: string;
   contificoSource?: "nicole" | "sucree";
+  fromContifico?: boolean; // true = este ítem fue importado desde Contífico
 }
 
 // Raw Material Schema
@@ -141,6 +142,11 @@ const RawMaterialSchema = new Schema<IRawMaterial>(
     contificoSource: {
       type: String,
       enum: ["nicole", "sucree"],
+    },
+    fromContifico: {
+      type: Boolean,
+      default: false,
+      index: true,
     },
   },
   {
