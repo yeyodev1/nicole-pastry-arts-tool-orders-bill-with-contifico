@@ -111,6 +111,7 @@ async function main() {
         category: catById.get(p.categoria_id) || "Sin Categoría",
         contificoId: p.id,
         contificoSource: source,
+        fromContifico: true,
         presentationQuantity: 1,
       });
       created++;
@@ -135,6 +136,7 @@ async function main() {
 
       if (existing) {
         existing.contificoPersonaId = pr.id;
+        existing.fromContifico = true;
         if (!existing.ruc && ruc) existing.ruc = ruc;
         if (!existing.email && pr.email) existing.email = pr.email;
         if (!existing.phone && pr.telefonos) existing.phone = pr.telefonos;
@@ -150,6 +152,7 @@ async function main() {
             phone: pr.telefonos || undefined,
             address: pr.direccion || undefined,
             contificoPersonaId: pr.id,
+            fromContifico: true,
             creditDays: 0,
             commercialAgents: [],
           });
