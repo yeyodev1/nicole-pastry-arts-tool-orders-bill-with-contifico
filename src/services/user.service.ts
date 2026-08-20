@@ -59,6 +59,13 @@ export class UserService {
   }
 
   /**
+   * Find user by id
+   */
+  async findById(id: string) {
+    return await models.users.findById(id).select('-password').lean();
+  }
+
+  /**
    * Get all users
    */
   async findAll(roleFilter?: string[]) {
