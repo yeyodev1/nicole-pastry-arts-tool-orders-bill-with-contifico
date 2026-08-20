@@ -1,6 +1,7 @@
 import type { Request, Response, NextFunction } from "express";
 import { HttpStatusCode } from "axios";
 import { models } from "../models";
+import MetaAdsService from "../services/meta-ads.service";
 import { ContificoService } from "../services/contifico.service";
 import { getECDateRange } from "../utils/date.utils";
 
@@ -560,6 +561,50 @@ export async function getSuperAdminAnalytics(req: Request, res: Response, next: 
     res.status(HttpStatusCode.InternalServerError).send({
       message: "Error fetching superadmin analytics.",
       error: error instanceof Error ? error.message : String(error)
+    });
+    return;
+  }
+}
+
+/**
+ * Proxy for Meta Ads API (Metrics API)
+ */
+export async function getMetaAdsProxy(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { clientId, adAccountId, datePreset = 'this_month' } = req.query;
+
+    if (!clientId || !adAccountId) {
+      res.status(HttpStatusCode.BadRequest).send({
+        message: "clientId and adAccountId are required."
+      });
+      return;
+    }
+
+    const data = await MetaAdsService.getInsights(
+      clientId as string,
+      adAccountId as string,
+      datePreset as string
+    );
+
+    res.status(HttpStatusCode.Ok).send(data);
+    return;
+
+  } catch (error: any) {
+    console.error("❌ Error in getMetaAdsProxy:", error);
+    
+    let status = error.response?.status || HttpStatusCode.InternalServerError;
+    
+    // CRITICAL: If the upstream (ngrok/metrics) returns 401, we MUST NOT return 401 to our frontend,
+    // otherwise the frontend interceptor will log out the user.
+    if (status === 401) {
+      status = HttpStatusCode.BadGateway; // 502
+    }
+
+    const message = error.response?.data?.message || "Error fetching Meta Ads data via proxy.";
+    
+    res.status(status).send({
+      message: `Upstream error: ${message}`,
+      error: error.message
     });
     return;
   }
