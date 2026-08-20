@@ -183,6 +183,12 @@ export class UserService {
         name: "Pantalla Cocina",
         role: "KITCHEN_DISPLAY",
       },
+      {
+        email: "bodega@nicole.com.ec",
+        password: "Nicole2020!",
+        name: "Receptor de Bodega",
+        role: "WAREHOUSE_RECEIVER",
+      },
     ];
 
 
