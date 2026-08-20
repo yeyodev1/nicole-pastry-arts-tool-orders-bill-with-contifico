@@ -16,4 +16,7 @@ router.get("/sales-by-responsible", authMiddleware as any, AnalyticsController.g
 // GET /api/analytics/superadmin/main
 router.get("/superadmin/main", authMiddleware as any, AnalyticsController.getSuperAdminAnalytics);
 
+// GET /api/analytics/meta-ads (Proxy - Public for testing/CORS bypass)
+router.get("/meta-ads", AnalyticsController.getMetaAdsProxy);
+
 export default router;
