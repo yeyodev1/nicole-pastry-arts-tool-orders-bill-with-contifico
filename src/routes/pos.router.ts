@@ -9,6 +9,7 @@ import {
   getRestockDailyForm,
   submitRestockDailyEntry,
   getRestockHistory,
+  getRestockLeftovers,
   deleteRestockObjective,
   settleOrder,
 } from "../controllers/pos.controller";
@@ -38,6 +39,7 @@ router.delete("/restock/objectives/:productName", deleteRestockObjective);
 router.get("/restock/daily-form", getRestockDailyForm);
 router.post("/restock/daily-entry", submitRestockDailyEntry);
 router.get("/restock/history", getRestockHistory);
+router.get("/restock/leftovers", getRestockLeftovers);
 
 // Settle order in island
 router.put("/orders/:orderId/settle", settleOrder);
