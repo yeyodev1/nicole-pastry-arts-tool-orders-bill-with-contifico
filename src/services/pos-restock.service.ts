@@ -445,4 +445,181 @@ export class POSRestockService {
     const result = await models.posStockObjectives.deleteOne({ branch: branchMatch(branch), productName });
     return result.deletedCount > 0;
   }
+
+  /**
+   * F10 — Sobrantes de cierre de día en punto de venta.
+   *
+   * Devuelve, por día y sucursal, cuántas unidades quedaron al cerrar (stockFinal),
+   * cuánto se recibió ese día y la venta implícita que cuadra el inventario:
+   *
+   *   stockFinal(d-1) + recibido(d) - bajas(d) - stockFinal(d) = ventaImplicita(d)
+   *
+   * Si no existe cierre del día anterior, `stockInicial` queda en null y la venta
+   * implícita no se calcula (no se asume 0).
+   */
+  async getLeftovers(params: { from: string; to: string; branch?: string }) {
+    const { from, to, branch } = params;
+    const fromDate = parseDateStr(from);
+    const toDate = parseDateStr(to);
+    toDate.setUTCHours(23, 59, 59, 999);
+
+    // Día previo al rango: necesario para el stock inicial del primer día.
+    const prevDate = new Date(fromDate);
+    prevDate.setUTCDate(prevDate.getUTCDate() - 1);
+
+    const allBranches = branch && branch !== "all";
+    const entryQuery: any = { date: { $gte: prevDate, $lte: toDate } };
+    if (allBranches) entryQuery.branch = branchMatch(branch as string);
+
+    const entries = (await models.posDailyEntries
+      .find(entryQuery)
+      .sort({ date: 1 })
+      .lean()) as any[];
+
+    // Sucursales a considerar: las activas (o la filtrada) + las que ya tienen cierres.
+    let branchNames: string[];
+    if (allBranches) {
+      branchNames = [branch as string];
+    } else {
+      const active = (await models.branches
+        .find({ isActive: true })
+        .sort({ sortOrder: 1 })
+        .lean()) as any[];
+      const fromDb = active.map((b) => b.name);
+      const fromEntries = entries.map((e) => e.branch);
+      branchNames = Array.from(new Set([...fromDb, ...fromEntries]));
+    }
+
+    const branchKey = (b: string) => b.trim().toLowerCase();
+    const allowed = new Set(branchNames.map(branchKey));
+
+    // Recepciones confirmadas en el rango: dispatch.destination = sucursal.
+    const received = await this.getReceivedByDay(fromDate, toDate);
+
+    // Índice de cierres: `${branchKey}|${YYYY-MM-DD}|${producto}` → item
+    const entryIndex = new Map<string, any>();
+    const daysWithEntry = new Set<string>();
+    for (const entry of entries) {
+      const dateStr = toDateStr(new Date(entry.date));
+      const bk = branchKey(entry.branch);
+      if (!allowed.has(bk)) continue;
+      daysWithEntry.add(`${bk}|${dateStr}`);
+      for (const item of entry.items || []) {
+        entryIndex.set(`${bk}|${dateStr}|${item.productName}`, { ...item, entry });
+      }
+    }
+
+    // Recorrer día por día del rango solicitado.
+    const rows: any[] = [];
+    const missing: Array<{ date: string; branch: string }> = [];
+
+    const cursor = new Date(fromDate);
+    while (cursor <= toDate) {
+      const dateStr = toDateStr(cursor);
+      const prev = new Date(cursor);
+      prev.setUTCDate(prev.getUTCDate() - 1);
+      const prevStr = toDateStr(prev);
+
+      for (const bName of branchNames) {
+        const bk = branchKey(bName);
+        if (!daysWithEntry.has(`${bk}|${dateStr}`)) {
+          missing.push({ date: dateStr, branch: bName });
+          continue;
+        }
+
+        const entry = entries.find(
+          (e) => branchKey(e.branch) === bk && toDateStr(new Date(e.date)) === dateStr
+        );
+        if (!entry) continue;
+
+        for (const item of entry.items || []) {
+          const prevItem = entryIndex.get(`${bk}|${prevStr}|${item.productName}`);
+          const stockInicial = prevItem ? prevItem.stockFinal : null;
+          const recibido = received.get(`${bk}|${dateStr}|${item.productName}`) ?? 0;
+          const bajas = item.bajas ?? 0;
+          const stockFinal = item.stockFinal ?? 0;
+
+          rows.push({
+            date: dateStr,
+            branch: entry.branch,
+            productName: item.productName,
+            unit: item.unit,
+            stockInicial,
+            recibido,
+            bajas,
+            bajasNote: item.bajasNote,
+            stockFinal,
+            stockObjectiveTomorrow: item.stockObjectiveTomorrow ?? 0,
+            pedidoFinal: item.pedidoFinal ?? 0,
+            ventaImplicita:
+              stockInicial === null ? null : stockInicial + recibido - bajas - stockFinal,
+            submittedBy: entry.submittedBy,
+            submittedAt: entry.submittedAt,
+          });
+        }
+      }
+
+      cursor.setUTCDate(cursor.getUTCDate() + 1);
+    }
+
+    const totals = rows.reduce(
+      (acc, r) => {
+        acc.stockFinal += r.stockFinal;
+        acc.bajas += r.bajas;
+        acc.recibido += r.recibido;
+        if (r.ventaImplicita !== null) acc.ventaImplicita += r.ventaImplicita;
+        return acc;
+      },
+      { stockFinal: 0, bajas: 0, recibido: 0, ventaImplicita: 0 }
+    );
+
+    return {
+      rows,
+      totals: { ...totals, rows: rows.length },
+      branches: branchNames,
+      missing,
+    };
+  }
+
+  /**
+   * Suma lo recibido por sucursal/día/producto a partir de los despachos
+   * confirmados en el POS. Usa `quantityReceived` cuando existe (recepción
+   * con checklist) y cae a `quantitySent` cuando no se detalló.
+   */
+  private async getReceivedByDay(fromDate: Date, toDate: Date): Promise<Map<string, number>> {
+    // receivedAt es un timestamp completo: se amplía el rango a los bordes EC (UTC-5).
+    const start = new Date(fromDate.getTime());
+    const end = new Date(toDate.getTime() + 5 * 3600000);
+
+    const orders = (await models.orders
+      .find(
+        {
+          "dispatches.receptionStatus": "RECEIVED",
+          "dispatches.receivedAt": { $gte: start, $lte: end },
+        },
+        { dispatches: 1 }
+      )
+      .lean()) as any[];
+
+    const map = new Map<string, number>();
+    for (const order of orders) {
+      for (const dispatch of order.dispatches || []) {
+        if (dispatch.receptionStatus !== "RECEIVED" || !dispatch.receivedAt) continue;
+        const receivedAt = new Date(dispatch.receivedAt);
+        if (receivedAt < start || receivedAt > end) continue;
+
+        // Día en hora Ecuador (UTC-5)
+        const ecDay = toDateStr(new Date(receivedAt.getTime() - 5 * 3600000));
+        const bk = String(dispatch.destination || "").trim().toLowerCase();
+        if (!bk) continue;
+
+        for (const item of dispatch.items || []) {
+          const qty = item.quantityReceived ?? item.quantitySent ?? 0;
+          const key = `${bk}|${ecDay}|${item.name}`;
+          map.set(key, (map.get(key) ?? 0) + qty);
+        }
+      }
+    }
+    return map;
+  }
 }
