@@ -283,6 +283,30 @@ export async function getRestockHistory(req: Request, res: Response): Promise<vo
 }
 
 /**
+ * GET /api/pos/restock/leftovers
+ * Query: from, to (YYYY-MM-DD, requeridos), branch (opcional, "all" = todas)
+ * F10 — sobrantes de cierre por día y sucursal + cuadre de inventario.
+ */
+export async function getRestockLeftovers(req: Request, res: Response): Promise<void> {
+  try {
+    const { from, to, branch } = req.query;
+    if (!from || !to) {
+      res.status(HttpStatusCode.BadRequest).send({ message: "from and to query params are required." });
+      return;
+    }
+    const data = await posRestockService.getLeftovers({
+      from: from as string,
+      to: to as string,
+      branch: branch as string | undefined,
+    });
+    res.status(HttpStatusCode.Ok).send({ message: "Leftovers retrieved.", ...data });
+  } catch (error: any) {
+    console.error("Error retrieving POS leftovers:", error);
+    res.status(HttpStatusCode.InternalServerError).send({ message: "Failed to retrieve leftovers.", error: error.message });
+  }
+}
+
+/**
  * PUT /api/pos/orders/:orderId/settle
  * Marks an order as settled in a physical island branch.
  */
