@@ -20,6 +20,7 @@ import BranchRouter from "./branch.router";
 import PayablesRouter from "./payables.router";
 import RequisitionRouter from "./requisition.router";
 import WarehouseLoanRouter from "./warehouse-loan.router";
+import SellerRouter from "./seller.router";
 
 import { WarehouseRouter } from "./warehouse.routes";
 
@@ -43,6 +44,7 @@ function routerApi(app: Application) {
   router.use("/settings/production", ProductionSettingsRouter);
   router.use("/settings/warehouse", WarehouseSettingsRouter);
   router.use("/branches", BranchRouter);
+  router.use("/sellers", SellerRouter);
 
   router.use("/provider-categories", ProviderCategoryRouter);
   router.use("/warehouse", WarehouseRouter);

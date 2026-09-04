@@ -1,5 +1,12 @@
 import axios, { HttpStatusCode } from "axios";
 import { IPerson } from "../interfaces/person.interface";
+import { InvoiceSequenceModel } from "../models/invoice-sequence.model";
+import { SellerModel } from "../models/seller.model";
+import {
+  CONTIFICO_SERIE,
+  CONTIFICO_SECUENCIAL_MINIMO,
+  buildDocumentNumber,
+} from "../config/contifico-emision.config";
 
 export class ContificoService {
   private apiKey: string;
@@ -217,14 +224,17 @@ export class ContificoService {
       total_final = subtotal_0 + subtotal_15 + total_iva;
 
       // 2. Prepare Payload
-      // Generating a random document number (sequence) to avoid collisions during dev.
-      // IN PROD: You should query the sequence or use auto-generation if supported.
-      const randomSeq = Math.floor(Math.random() * 900000) + 100000;
-      const docNumber = `001-001-000${randomSeq}`;
+      // Número de documento de la serie principal (001-001 = Matriz / CDP).
+      // El secuencial sale de un contador atómico en Mongo, sembrado con el último
+      // número realmente emitido en Contífico — ver contifico-emision.config.ts.
+      const docNumber = await this.nextInvoiceNumber();
 
       // POS ID de la cuenta Contífico correspondiente.
       // Se obtiene de env var o se auto-detecta desde /caja/ (una vez, cacheado por instancia).
       const POS_DULCERIA_ID = await this.resolvePosId();
+
+      // Vendedor a cargo — Contífico arma el reporte de comisiones con este campo.
+      const vendedorPayload = await this.resolveVendedorPayload(orderData);
 
       // Identificación del cliente para la factura.
       // REGLA SRI: tipoIdentificacionComprador se determina SOLO por el largo del ID:
@@ -309,7 +319,9 @@ export class ContificoService {
         total: Number(total_final.toFixed(2)),
         servicio: 0,
         propina: 0,
-        metodo_pago: "TRA"
+        metodo_pago: "TRA",
+        // Vendedor a cargo (comisiones). Se omite si el pedido no tiene uno asignado.
+        ...(vendedorPayload || {})
       };
 
 
@@ -322,9 +334,20 @@ export class ContificoService {
 
       return response.data;
     } catch (error: any) {
-      console.error("❌ Error creating invoice in Contífico:", error.response?.data || error.message);
+      const apiError = error.response?.data || error.message;
+      console.error("❌ Error creating invoice in Contífico:", apiError);
+
+      // Si Contífico rechazó el número de documento (secuencial repetido o fuera
+      // de rango), re-sincronizamos el contador contra la API para que el próximo
+      // intento arranque desde el número correcto. No reintentamos aquí a
+      // propósito: reintentar dentro del mismo request puede duplicar la factura.
+      const msg = typeof apiError === "object" ? JSON.stringify(apiError) : String(apiError);
+      if (/secuencia|secuencial|documento ya|duplicad|ya existe|ya fue registrad/i.test(msg)) {
+        await this.resyncInvoiceSequence().catch(() => undefined);
+      }
+
       // Return error info instead of throwing to avoid blocking order creation flow
-      return { error: error.response?.data || error.message };
+      return { error: apiError };
     }
   }
 
@@ -598,6 +621,169 @@ export class ContificoService {
     }
   }
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // NUMERACIÓN DE FACTURAS (serie del CDP principal)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Entrega el siguiente número de factura de la serie configurada
+   * (`CONTIFICO_SERIE`, por defecto 001-001 = Matriz / CDP).
+   *
+   * Antes se generaba con `Math.random()`, lo que podía repetir un secuencial ya
+   * emitido o saltar cientos de miles de números dentro de la serie del SRI.
+   * Ahora el contador vive en Mongo y se incrementa de forma atómica; la primera
+   * vez se siembra con el último secuencial realmente emitido en Contífico.
+   */
+  async nextInvoiceNumber(): Promise<string> {
+    const serie = CONTIFICO_SERIE;
+
+    const existing = await InvoiceSequenceModel.findOne({ source: this.source, serie });
+    if (!existing) {
+      const seed = await this.fetchLastSequentialFromContifico(serie);
+      await InvoiceSequenceModel.updateOne(
+        { source: this.source, serie },
+        { $setOnInsert: { source: this.source, serie, lastSequential: seed } },
+        { upsert: true }
+      );
+      console.log(`✅ [${this.source}] Contador de la serie ${serie} sembrado en ${seed}`);
+    }
+
+    const updated = await InvoiceSequenceModel.findOneAndUpdate(
+      { source: this.source, serie },
+      { $inc: { lastSequential: 1 } },
+      { new: true }
+    );
+
+    return buildDocumentNumber(updated!.lastSequential);
+  }
+
+  /**
+   * Vuelve a sembrar el contador desde Contífico. Se llama cuando la API rechaza
+   * el documento por un problema de secuencia, para que el siguiente intento
+   * (el próximo batch) arranque desde el número correcto.
+   */
+  async resyncInvoiceSequence(): Promise<number> {
+    const serie = CONTIFICO_SERIE;
+    const last = await this.fetchLastSequentialFromContifico(serie);
+    await InvoiceSequenceModel.updateOne(
+      { source: this.source, serie },
+      { $set: { lastSequential: last }, $setOnInsert: { source: this.source, serie } },
+      { upsert: true }
+    );
+    console.log(`🔄 [${this.source}] Contador de la serie ${serie} re-sincronizado en ${last}`);
+    return last;
+  }
+
+  /**
+   * Busca en Contífico el mayor secuencial ya emitido para una serie y lo devuelve
+   * elevado a `CONTIFICO_SECUENCIAL_MINIMO`.
+   *
+   * El piso importa más que la búsqueda: el endpoint sólo filtra por fecha de
+   * emisión, así que ninguna ventana razonable prueba haber visto el máximo
+   * histórico. El piso (1 000 000) está por encima de todo el rango que usaba el
+   * sorteo anterior, de modo que el resultado es seguro aunque el barrido no
+   * encuentre nada o la API esté caída.
+   *
+   * Cada día son ~2 MB de respuesta y decenas de segundos, así que conviene
+   * sembrar el contador con `pnpm seed:invoice-sequence` antes de desplegar
+   * en lugar de dejar que ocurra dentro de la primera factura.
+   */
+  async fetchLastSequentialFromContifico(serie: string = CONTIFICO_SERIE, daysBack: number = 2): Promise<number> {
+    let max = CONTIFICO_SECUENCIAL_MINIMO;
+
+    for (let i = 0; i < daysBack; i++) {
+      const day = new Date();
+      day.setDate(day.getDate() - i);
+      const fecha = day.toLocaleDateString("en-GB"); // DD/MM/YYYY
+
+      try {
+        const docs = await this.getDocuments({ fecha_emision: fecha, tipo_registro: "CLI" });
+        if (!Array.isArray(docs)) continue;
+
+        for (const doc of docs) {
+          const numero: string = doc?.documento || "";
+          if (!numero.startsWith(`${serie}-`)) continue;
+          const seq = Number(numero.slice(serie.length + 1));
+          if (Number.isFinite(seq) && seq > max) max = seq;
+        }
+      } catch (err: any) {
+        console.warn(`⚠️ [${this.source}] No se pudo leer documentos de ${fecha}: ${err.message}`);
+      }
+    }
+
+    return max;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // VENDEDOR (comisiones)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Resuelve el vendedor que debe salir en la factura.
+   *
+   * Orden de búsqueda:
+   *   1. `order.sellerIdentification` (cédula elegida al crear el pedido)
+   *   2. `order.sellerName`
+   *   3. `order.responsible` — para que los pedidos antiguos, donde el
+   *      responsable ya es uno de los vendedores, también arrastren la comisión.
+   *
+   * Devuelve el fragmento de payload listo para mezclar en el documento, o `null`
+   * si no hay vendedor identificable (la factura sale igual, sin comisión).
+   */
+  async resolveVendedorPayload(orderData: any): Promise<{ vendedor_id?: string; vendedor?: any } | null> {
+    const identification = String(orderData?.sellerIdentification || "").replace(/\D/g, "");
+    const byName = String(orderData?.sellerName || orderData?.responsible || "").trim();
+
+    let seller = null as any;
+
+    if (identification) {
+      seller = await SellerModel.findOne({
+        contificoSource: this.source,
+        identification,
+        isActive: true,
+      });
+    }
+
+    if (!seller && byName) {
+      seller = await SellerModel.findOne({
+        contificoSource: this.source,
+        isActive: true,
+        name: new RegExp(`^${byName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i"),
+      });
+    }
+
+    if (!seller) {
+      if (identification || byName) {
+        console.warn(`⚠️ [${this.source}] Sin vendedor en catálogo para "${byName || identification}" — la factura sale sin comisión.`);
+      }
+      return null;
+    }
+
+    // Contífico identifica al vendedor por su ID de persona. Si todavía no lo
+    // tenemos guardado, lo resolvemos por cédula y lo cacheamos.
+    if (!seller.contificoPersonId) {
+      const persona = await this.findPersona(seller.identification);
+      if (persona?.id) {
+        seller.contificoPersonId = persona.id;
+        await seller.save();
+      }
+    }
+
+    if (!seller.contificoPersonId) {
+      console.warn(`⚠️ [${this.source}] Vendedor ${seller.name} (${seller.identification}) no existe en Contífico.`);
+      return null;
+    }
+
+    return {
+      vendedor_id: seller.contificoPersonId,
+      vendedor: {
+        cedula: seller.identification,
+        razon_social: seller.name,
+        tipo: "N",
+      },
+    };
+  }
+
   /**
    * Resuelve el POS ID para esta cuenta Contífico.
    * Prioridad: env var → auto-detección por frecuencia en /caja/ → primer caja disponible.
@@ -723,6 +909,8 @@ export class ContificoService {
       const total = Number((subtotal_0 + subtotal_12_val + iva).toFixed(2));
 
       const POS_ID = await this.resolvePosId();
+      // El documento reparado debe conservar el mismo vendedor, o se pierde la comisión.
+      const vendedorPayload = await this.resolveVendedorPayload(orderData);
       const rawId = (orderData.invoiceData?.ruc || "").replace(/\s+/g, "");
 
       // Mismo criterio que createInvoice: tipo según doc oficial (N/J), nunca "C"
@@ -766,6 +954,7 @@ export class ContificoService {
         servicio: 0,
         propina: 0,
         metodo_pago: "TRA",
+        ...(vendedorPayload || {}),
       };
 
       const response = await axios.put(`${this.baseUrl}/documento/`, payload, {

@@ -108,6 +108,28 @@ export async function createOrder(req: AuthRequest, res: Response, next: NextFun
     const firstProductSource = orderData.products?.[0]?.source;
     orderData.contificoSource = firstProductSource === 'sucree' ? 'sucree' : 'nicole';
 
+    // Vendedor a cargo: la cédula manda. El nombre se toma del catálogo para que
+    // coincida exacto con la persona en Contífico (de ahí sale la comisión).
+    const sellerIdentification = String(orderData.sellerIdentification || "").replace(/\D/g, "");
+    if (sellerIdentification) {
+      const seller = await models.sellers.findOne({
+        contificoSource: orderData.contificoSource,
+        identification: sellerIdentification,
+        isActive: true,
+      });
+      if (!seller) {
+        res.status(HttpStatusCode.BadRequest).send({
+          message: `Vendedor con cédula ${sellerIdentification} no está en el catálogo activo.`,
+        });
+        return;
+      }
+      orderData.sellerIdentification = seller.identification;
+      orderData.sellerName = seller.name;
+    } else {
+      delete orderData.sellerIdentification;
+      delete orderData.sellerName;
+    }
+
     // Default defaults
     if (!orderData.orderDate) orderData.orderDate = new Date();
     if (!orderData.salesChannel) orderData.salesChannel = "Web";
@@ -669,6 +691,30 @@ export async function updateOrder(req: AuthRequest, res: Response, next: NextFun
     // Settlement updates
     if (updateData.settledInIsland !== undefined) order.settledInIsland = updateData.settledInIsland;
     if (updateData.settledIslandName) order.settledIslandName = updateData.settledIslandName;
+
+    // Vendedor a cargo — sólo mientras la factura no se haya emitido: después el
+    // documento ya vive en Contífico con su vendedor y cambiarlo aquí no lo mueve.
+    if (updateData.sellerIdentification !== undefined && order.invoiceStatus !== 'PROCESSED') {
+      const nextIdentification = String(updateData.sellerIdentification || "").replace(/\D/g, "");
+      if (!nextIdentification) {
+        order.sellerIdentification = undefined;
+        order.sellerName = undefined;
+      } else {
+        const seller = await models.sellers.findOne({
+          contificoSource: (order as any).contificoSource || 'nicole',
+          identification: nextIdentification,
+          isActive: true,
+        });
+        if (!seller) {
+          res.status(HttpStatusCode.BadRequest).send({
+            message: `Vendedor con cédula ${nextIdentification} no está en el catálogo activo.`,
+          });
+          return;
+        }
+        order.sellerIdentification = seller.identification;
+        order.sellerName = seller.name;
+      }
+    }
 
     // Audit for update
     if (currentUser) {

@@ -59,6 +59,10 @@ export interface IOrder extends Document {
   paymentMethod: string;
   invoiceNeeded: boolean;
   responsible: string;
+  /** Vendedor a cargo — es el que sale en la factura de Contífico para comisiones. */
+  sellerName?: string;
+  /** Cédula del vendedor. Llave con la que Contífico identifica a la persona. */
+  sellerIdentification?: string;
   createdBy: string;
   updatedBy: string;
   auditLog: Array<{
@@ -201,6 +205,8 @@ const OrderSchema = new Schema<IOrder>(
       type: String,
       required: true,
     },
+    sellerName: { type: String, trim: true },
+    sellerIdentification: { type: String, trim: true },
     createdBy: { type: String },
     updatedBy: { type: String },
     auditLog: [
