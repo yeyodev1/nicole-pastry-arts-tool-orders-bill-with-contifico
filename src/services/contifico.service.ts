@@ -7,6 +7,7 @@ import {
   CONTIFICO_SECUENCIAL_MINIMO,
   buildDocumentNumber,
 } from "../config/contifico-emision.config";
+import { CONTIFICO_CUENTA_BANCARIA_TRA } from "../config/contifico-cobro.config";
 
 export class ContificoService {
   private apiKey: string;
@@ -528,38 +529,13 @@ export class ContificoService {
         }
       }
 
-      // FIX: Resolve Bank Account ID for Transfer 'TRA'
+      // Toda transferencia entra a la misma cuenta: Banco Guayaquil.
+      // Se fija el ID, no el nombre — ver contifico-cobro.config.ts para el
+      // porqué (la cuenta está registrada como "Banco Guayquil", sin la "a",
+      // así que empatar por nombre fallaba y caía al primer banco de la lista).
       if (payload.forma_cobro === 'TRA') {
-        const providedId = payload.cuenta_bancaria_id;
-        // Check if it looks like a name (contains spaces) or is empty
-        // ID is usually short alphanumeric. Names have spaces.
-        const looksLikeName = providedId && (providedId.includes(' ') || providedId.length > 25);
-
-        if (!providedId || looksLikeName) {
-          const banks = await this.getBankAccounts();
-
-          if (banks && banks.length > 0) {
-            let match;
-            if (providedId) {
-              match = banks.find((b: any) => b.nombre?.toLowerCase().includes(providedId.toLowerCase()));
-            }
-
-            // Default to first if not found or no name provided
-            if (!match) {
-              console.warn(`⚠️ Bank '${providedId}' not found. Using first available bank account.`);
-              match = banks[0];
-            }
-
-            if (match) {
-              payload.cuenta_bancaria_id = match.id;
-
-              // Ensure tipo_ping is set (D = Deposito)
-              if (!payload.tipo_ping) payload.tipo_ping = "D";
-            }
-          } else {
-            console.error("❌ No Bank Accounts found in Contífico. Transfer registration may fail.");
-          }
-        }
+        payload.cuenta_bancaria_id = CONTIFICO_CUENTA_BANCARIA_TRA;
+        if (!payload.tipo_ping) payload.tipo_ping = "D"; // D = Depósito
       }
 
 
