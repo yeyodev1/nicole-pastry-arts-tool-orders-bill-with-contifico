@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from "express";
+import { CONTIFICO_CUENTA_BANCARIA_TRA } from "../config/contifico-cobro.config";
 import { HttpStatusCode } from "axios";
 import { models } from "../models";
 import { ContificoService } from "../services/contifico.service";
@@ -149,6 +150,13 @@ export async function createOrder(req: AuthRequest, res: Response, next: NextFun
         fecha: new Date().toISOString().split('T')[0],
         numero_comprobante: `ISLA-${orderData.settledIslandName}`
       };
+    }
+
+    // Banco de destino de las transferencias: siempre el mismo. Se fija aquí
+    // para que el pedido quede guardado con la cuenta real, y no en blanco
+    // como quedaba cuando el vendedor no escribía nada.
+    if (orderData.paymentDetails?.forma_cobro === 'TRA') {
+      orderData.paymentDetails.cuenta_bancaria_id = CONTIFICO_CUENTA_BANCARIA_TRA;
     }
 
     // Initialize payments array if paymentDetails is present
@@ -520,11 +528,11 @@ export async function processPendingInvoices(req: AuthRequest, res: Response, ne
         if (order.paymentDetails && order.paymentDetails.monto && order.paymentDetails.forma_cobro !== 'CR') {
           try {
 
-            // Fix Bank ID if needed for existing bad data
+            // El banco de destino lo fija registerCollection, y sólo para
+            // transferencias — aquí no corresponde imponerlo.
             const collectionPayload = {
               ...order.paymentDetails,
               monto: invoiceResponse.total, // FORCE MATCH: Pay exactly what the invoice says
-              cuenta_bancaria_id: resolveBankId(order.paymentDetails.cuenta_bancaria_id)
             };
 
             await orderSvc.registerCollection(invoiceResponse.id, collectionPayload);
@@ -744,23 +752,6 @@ export async function updateOrder(req: AuthRequest, res: Response, next: NextFun
   }
 }
 
-// Helper to map bank names to Contífico IDs
-function resolveBankId(inputName: string | undefined): string {
-  if (!inputName) return "";
-
-  const normalized = inputName.toLowerCase().trim();
-  const map: { [key: string]: string } = {
-    'banco guayaquil': 'RYWb4RPQcx81eZ1m',
-    'guayaquil': 'RYWb4RPQcx81eZ1m',
-    'banco pichincha': 'wy7aANAJs5RWbgZY',
-    'pichincha': 'wy7aANAJs5RWbgZY',
-    'banco bolivariano': 'lwKe5QQMI1lGe31R',
-    'bolivariano': 'lwKe5QQMI1lGe31R'
-  };
-
-  return map[normalized] || inputName;
-}
-
 /**
  * Register a collection (cobro) for an order
  * POST /api/orders/:id/collection
@@ -804,9 +795,11 @@ export async function registerCollection(req: AuthRequest, res: Response, next: 
       return;
     }
 
-    // 3. Resolve Bank ID
-    if (collectionData.cuenta_bancaria_id) {
-      collectionData.cuenta_bancaria_id = resolveBankId(collectionData.cuenta_bancaria_id);
+    // 3. Banco de destino: las transferencias siempre entran a la misma cuenta.
+    // El vendedor ya no elige banco, así que se fija aquí y queda registrado
+    // igual en el pedido y en Contífico.
+    if (collectionData.forma_cobro === 'TRA') {
+      collectionData.cuenta_bancaria_id = CONTIFICO_CUENTA_BANCARIA_TRA;
     }
 
     // Update Legacy Field (Last Payment)
@@ -996,7 +989,6 @@ export async function generateInvoice(req: AuthRequest, res: Response, next: Nex
         const collectionPayload = {
           ...order.paymentDetails,
           monto: invoiceResponse.total,
-          cuenta_bancaria_id: resolveBankId(order.paymentDetails.cuenta_bancaria_id)
         };
         await svc.registerCollection(invoiceResponse.id, collectionPayload);
       } catch (err) {
@@ -1135,7 +1127,6 @@ export async function regenerateInvoice(req: AuthRequest, res: Response, next: N
         const collectionPayload = {
           ...(order as any).paymentDetails,
           monto: invoiceResponse.total,
-          cuenta_bancaria_id: resolveBankId((order as any).paymentDetails.cuenta_bancaria_id)
         };
         await svc.registerCollection(invoiceResponse.id, collectionPayload);
       } catch (err) {
